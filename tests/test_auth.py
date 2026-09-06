@@ -417,6 +417,6 @@ class TestAccountWithdrawal:
         assert session is expected_session
         auth_client.auth.sign_in_with_password.assert_called_once_with({
             "email": user.email,
-            "password": "Password1!",
+            "password": auth_service._supabase_password(user.id, "Password1!"),
         })
         admin_client.auth.sign_in_with_password.assert_not_called()

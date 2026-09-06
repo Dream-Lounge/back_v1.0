@@ -33,6 +33,7 @@ class FormQuestion(Base):
     # 'text': 단답·서술 / 'choice': 단일 선택 / 'multiselect': 복수 선택
     question_type: Mapped[str] = mapped_column(String(20), nullable=False, default="text")
     is_required: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     order_index: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     options: Mapped[dict | None] = mapped_column(JSON)
 

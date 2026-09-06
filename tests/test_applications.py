@@ -85,12 +85,41 @@ class TestCreateApplication:
         })
         assert resp.status_code == 400
 
+    def test_submit_ignores_inactive_required_question(self, client, db, app_setup):
+        """관리자가 삭제한 필수 문항은 최종 제출 검증에서 제외."""
+        from src.models.application import FormQuestion
+
+        question = db.get(FormQuestion, app_setup["question_id"])
+        question.is_active = False
+        db.commit()
+
+        resp = client.post("/api/v1/applications", headers=app_setup["headers"], json={
+            **APPLICANT,
+            "form_id": app_setup["form_id"],
+            "is_draft": False,
+            "answers": [],
+        })
+        assert resp.status_code == 201
+
     def test_draft_allows_missing_required_answer(self, client, app_setup):
         """임시저장은 필수 질문 미답변도 허용."""
         resp = client.post("/api/v1/applications", headers=app_setup["headers"], json={
             "form_id": app_setup["form_id"],
             "is_draft": True,
             "answers": [],
+        })
+        assert resp.status_code == 201
+
+    def test_draft_allows_blank_applicant_info(self, client, app_setup):
+        """프론트가 빈 기본정보 문자열을 보내도 임시저장은 허용."""
+        resp = client.post("/api/v1/applications", headers=app_setup["headers"], json={
+            "form_id": app_setup["form_id"],
+            "is_draft": True,
+            "answers": [],
+            "applicant_name": "",
+            "applicant_department": "",
+            "applicant_phone": "",
+            "applicant_grade": "",
         })
         assert resp.status_code == 201
 
@@ -140,6 +169,19 @@ class TestUpdateApplication:
         })
         assert resp.status_code == 200
         assert resp.json()["answers"][0]["answer_text"] == "수정된 답변"
+
+    def test_update_draft_allows_blank_applicant_info(self, client, app_setup):
+        app_id = self._create_draft(client, app_setup)
+        resp = client.patch(f"/api/v1/applications/{app_id}", headers=app_setup["headers"], json={
+            "is_draft": True,
+            "answers": [],
+            "applicant_name": "",
+            "applicant_department": "",
+            "applicant_phone": "",
+            "applicant_grade": "",
+        })
+        assert resp.status_code == 200
+        assert resp.json()["applicant_name"] is None
 
     def test_submit_from_draft(self, client, app_setup):
         app_id = self._create_draft(client, app_setup)

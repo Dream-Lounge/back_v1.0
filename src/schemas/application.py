@@ -24,7 +24,7 @@ class ApplicationCreate(BaseModel):
     applicant_name: Optional[str] = Field(None, max_length=50)
     applicant_department: Optional[str] = Field(None, max_length=100)
     applicant_phone: Optional[str] = Field(None, max_length=20)
-    applicant_grade: Optional[str] = Field(None, pattern=r"^[1-6]$")
+    applicant_grade: Optional[str] = Field(None, pattern=r"^(?:[1-6])?$")
 
 
 class ApplicationUpdate(BaseModel):
@@ -34,7 +34,7 @@ class ApplicationUpdate(BaseModel):
     applicant_name: Optional[str] = Field(None, max_length=50)
     applicant_department: Optional[str] = Field(None, max_length=100)
     applicant_phone: Optional[str] = Field(None, max_length=20)
-    applicant_grade: Optional[str] = Field(None, pattern=r"^[1-6]$")
+    applicant_grade: Optional[str] = Field(None, pattern=r"^(?:[1-6])?$")
 
 
 class ApplicationAnswerResponse(BaseModel):

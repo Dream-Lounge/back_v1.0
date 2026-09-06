@@ -94,6 +94,12 @@ def register(body: UserCreate, request: Request, db: Session = Depends(get_db)):
         raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail=str(e))
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    except (AuthApiError, RuntimeError) as e:
+        logger.error("Supabase Auth 회원 생성 실패: %s", e)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="인증 계정을 생성할 수 없습니다. 잠시 후 다시 시도해주세요.",
+        )
     except DBOperationalError as e:
         logger.error(f"DB 연결 오류: {e}", exc_info=True)
         raise HTTPException(
@@ -120,12 +126,8 @@ def login(body: LoginRequest, request: Request, db: Session = Depends(get_db)):
             detail="학번 또는 비밀번호가 올바르지 않습니다.",
         )
     try:
-        # 간편 계정은 Supabase Auth를 생성하지 않고 백엔드 JWT만 사용한다.
-        session = (
-            auth_service.create_supabase_session(db, user, body.password)
-            if user.auth_user_id
-            else None
-        )
+        # 기존 간편 계정도 최초 로그인 시 Supabase Auth에 자동 연결한다.
+        session = auth_service.create_supabase_session(db, user, body.password)
     except AuthApiError as e:
         if e.code == "invalid_credentials":
             auth_service.record_login_failure(db, body.student_id, client_ip)
@@ -160,15 +162,23 @@ def login(body: LoginRequest, request: Request, db: Session = Depends(get_db)):
 
 @router.post("/refresh", response_model=TokenResponse)
 def refresh_session(body: RefreshTokenRequest, db: Session = Depends(get_db)):
-    """회전형 자체 refresh token으로 access token을 재발급한다."""
+    """Supabase 또는 기존 자체 refresh token으로 세션을 재발급한다."""
     try:
-        refresh_token, user = auth_service.rotate_local_session(db, body.refresh_token)
-        return TokenResponse(
-            access_token=create_access_token({"sub": user.id}),
-            refresh_token=refresh_token,
-            user=UserInfo.model_validate(user),
-        )
-    except ValueError as e:
+        try:
+            refresh_token, user = auth_service.rotate_local_session(db, body.refresh_token)
+            return TokenResponse(
+                access_token=create_access_token({"sub": user.id}),
+                refresh_token=refresh_token,
+                user=UserInfo.model_validate(user),
+            )
+        except ValueError:
+            session, user = auth_service.refresh_supabase_session(db, body.refresh_token)
+            return TokenResponse(
+                access_token=session.access_token,
+                refresh_token=session.refresh_token,
+                user=UserInfo.model_validate(user),
+            )
+    except (ValueError, AuthApiError) as e:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(e))
     except Exception as e:
         logger.warning("세션 갱신 실패: %s", e)

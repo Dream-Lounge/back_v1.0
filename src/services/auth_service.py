@@ -41,6 +41,11 @@ def _fingerprint(value: str) -> str:
     ).hexdigest()
 
 
+def _supabase_password(user_id: str, pin: str) -> str:
+    """4자리 PIN을 Supabase Auth용 고강도 내부 비밀번호로 파생한다."""
+    return f"Dl1!{_fingerprint(f'supabase-password:{user_id}:{pin}')}"
+
+
 def _code_digest(email: str, code: str) -> str:
     return _fingerprint(f"email-code:{email}:{code}")
 
@@ -289,11 +294,7 @@ def _require_valid_confirmation_token(
 
 
 def register_user(db: Session, data: UserCreate) -> User:
-    """학번과 4자리 PIN만으로 간편 계정을 생성한다.
-
-    기존 Supabase 테이블 구조는 그대로 사용하고, Supabase Auth에는 계정을
-    만들지 않는다. 필수 DB 컬럼에는 충돌하지 않는 내부용 값을 저장한다.
-    """
+    """학번과 4자리 PIN으로 DB 사용자와 Supabase Auth 계정을 함께 생성한다."""
     if db.query(User).filter(User.student_id == data.student_id).first():
         raise ValueError("이미 가입된 회원 정보입니다.")
 
@@ -307,8 +308,33 @@ def register_user(db: Session, data: UserCreate) -> User:
         email=f"{data.student_id}@simple.dreamlounge.local",
         email_verified=False,
     )
+    auth_user_id: str | None = None
     try:
         db.add(user)
+        db.flush()
+
+        if settings.SUPABASE_SERVICE_KEY:
+            admin = get_supabase_admin_client().auth.admin
+            internal_password = _supabase_password(user.id, data.password)
+            existing = _find_auth_user_by_email(user.email)
+            if existing:
+                linked = db.query(User).filter(
+                    User.auth_user_id == str(existing.id), User.id != user.id
+                ).first()
+                if linked:
+                    raise ValueError("이미 가입된 인증 계정입니다.")
+                admin.update_user_by_id(str(existing.id), {"password": internal_password})
+                auth_user_id = str(existing.id)
+            else:
+                created = admin.create_user({
+                    "email": user.email,
+                    "password": internal_password,
+                    "email_confirm": True,
+                    "app_metadata": {"student_id": user.student_id},
+                })
+                auth_user_id = str(created.user.id)
+
+            user.auth_user_id = auth_user_id
         db.commit()
         db.refresh(user)
         return user
@@ -317,6 +343,11 @@ def register_user(db: Session, data: UserCreate) -> User:
         raise ValueError("이미 가입된 회원 정보입니다.") from exc
     except Exception:
         db.rollback()
+        if auth_user_id:
+            try:
+                get_supabase_admin_client().auth.admin.delete_user(auth_user_id)
+            except Exception:
+                logger.exception("DB 가입 실패 후 Supabase Auth 계정 정리에 실패했습니다.")
         raise
 
 
@@ -411,8 +442,11 @@ def authenticate_user(db: Session, student_id: str, password: str) -> User | Non
     user = db.query(User).filter(User.student_id == student_id).first()
     if not user:
         return None
-    # 연결 완료 사용자의 비밀번호 검증은 Supabase Auth 한 곳에서만 수행한다.
-    if not user.auth_user_id and not verify_password(password, user.password_hash):
+    # 신규 Supabase 연결 계정도 로컬 PIN 해시를 유지해 Auth 비밀번호 연결이
+    # 깨졌을 때 본인 PIN 확인 후 안전하게 복구할 수 있게 한다.
+    if user.password_hash != "!supabase-auth-only" and not verify_password(
+        password, user.password_hash
+    ):
         return None
     if not user.is_active:
         return None
@@ -425,16 +459,44 @@ def create_supabase_session(db: Session, user: User, password: str):
         return None
 
     auth_client = create_supabase_auth_client()
+    internal_password = _supabase_password(user.id, password)
     try:
         response = auth_client.auth.sign_in_with_password({
             "email": user.email,
-            "password": password,
+            "password": internal_password,
         })
     except AuthApiError as exc:
-        if user.auth_user_id:
-            raise
         if exc.code != "invalid_credentials":
             raise
+
+        # 과거 Supabase Auth 계정이 원래 비밀번호로 연결되어 있으면 한 번만
+        # 로그인한 뒤 새 내부 비밀번호로 전환한다.
+        if user.auth_user_id:
+            # 로컬 PIN 검증을 통과한 신규 계정은 내부 비밀번호를 안전하게
+            # 재설정할 수 있다. 과거 sentinel 계정은 아래 legacy 검증을 쓴다.
+            if user.password_hash != "!supabase-auth-only":
+                get_supabase_admin_client().auth.admin.update_user_by_id(
+                    str(user.auth_user_id), {"password": internal_password}
+                )
+                response = auth_client.auth.sign_in_with_password({
+                    "email": user.email,
+                    "password": internal_password,
+                })
+                return response.session
+            legacy_response = auth_client.auth.sign_in_with_password({
+                "email": user.email,
+                "password": password,
+            })
+            get_supabase_admin_client().auth.admin.update_user_by_id(
+                str(user.auth_user_id), {"password": internal_password}
+            )
+            response = auth_client.auth.sign_in_with_password({
+                "email": user.email,
+                "password": internal_password,
+            })
+            if not response.session:
+                response = legacy_response
+            return response.session
 
         # 이전 DB에서 이관된 사용자는 Auth 계정이 이미 있지만 연결 UUID가
         # 비어 있을 수 있다. 로컬 비밀번호 검증이 끝난 요청에서만 복구한다.
@@ -446,28 +508,26 @@ def create_supabase_session(db: Session, user: User, password: str):
             ).first()
             if linked:
                 raise RuntimeError("이미 다른 사용자와 연결된 인증 계정입니다.")
-            admin.update_user_by_id(str(existing.id), {"password": password})
+            admin.update_user_by_id(str(existing.id), {"password": internal_password})
             auth_user_id = str(existing.id)
         else:
             created = admin.create_user({
                 "email": user.email,
-                "password": password,
+                "password": internal_password,
                 "email_confirm": True,
-                "user_metadata": {"student_id": user.student_id, "name": user.name},
+                "app_metadata": {"student_id": user.student_id},
             })
             auth_user_id = str(created.user.id)
 
         response = auth_client.auth.sign_in_with_password({
             "email": user.email,
-            "password": password,
+            "password": internal_password,
         })
         user.auth_user_id = auth_user_id
-        user.password_hash = "!supabase-auth-only"
         db.commit()
 
     if not user.auth_user_id and response.user:
         user.auth_user_id = str(response.user.id)
-        user.password_hash = "!supabase-auth-only"
         db.commit()
     return response.session
 

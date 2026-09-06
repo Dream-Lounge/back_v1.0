@@ -1,8 +1,8 @@
 from sqlalchemy import or_
-from sqlalchemy.orm import Session, selectinload
+from sqlalchemy.orm import Session, selectinload, with_loader_criteria
 from src.models.club import Club, ClubActivityImage, ClubTag
 from src.models.club_member import ClubMember
-from src.models.application import ApplicationForm, FormQuestion
+from src.models.application import ApplicationAnswer, ApplicationForm, FormQuestion
 from src.models.user import User
 from src.schemas.club import ClubCreate, ClubUpdate, FormCreate, FormUpdate, QuestionCreate, QuestionUpdate
 
@@ -51,7 +51,14 @@ def get_active_form(db: Session, club_id: str) -> ApplicationForm | None:
     """동아리의 활성 신청 폼과 질문 목록 조회 (is_active=True인 최신 폼)."""
     return (
         db.query(ApplicationForm)
-        .options(selectinload(ApplicationForm.questions))
+        .options(
+            selectinload(ApplicationForm.questions),
+            with_loader_criteria(
+                FormQuestion,
+                FormQuestion.is_active.is_(True),
+                include_aliases=True,
+            ),
+        )
         .filter(ApplicationForm.club_id == club_id, ApplicationForm.is_active == True)
         .first()
     )
@@ -126,6 +133,7 @@ def create_club(db: Session, user: User, data: ClubCreate) -> Club:
         president_id=user.id,
         name=data.name,
         club_type=data.club_type,
+        tagline=data.tagline,
         description=data.description,
         contact_email=contact_email,
         contact_phone=contact_phone,
@@ -150,6 +158,9 @@ def create_club(db: Session, user: User, data: ClubCreate) -> Club:
         db.add(ClubTag(club_id=club.id, tag_key=tag.tag_key, tag_value=tag.tag_value))
 
     db.add(ClubMember(club_id=club.id, user_id=user.id, role="president", status="active"))
+    # 동아리 등록 직후부터 지원 페이지가 열릴 수 있도록 빈 기본 폼을 만든다.
+    # 관리자는 이후 문항을 자유롭게 추가할 수 있다.
+    db.add(ApplicationForm(club_id=club.id, title=f"{club.name} 지원서", is_active=True))
 
     db.commit()
     db.refresh(club)
@@ -269,7 +280,11 @@ def update_question(db: Session, club_id: str, question_id: str, data: QuestionU
     question = (
         db.query(FormQuestion)
         .join(ApplicationForm, FormQuestion.form_id == ApplicationForm.id)
-        .filter(ApplicationForm.club_id == club_id, FormQuestion.id == question_id)
+        .filter(
+            ApplicationForm.club_id == club_id,
+            FormQuestion.id == question_id,
+            FormQuestion.is_active.is_(True),
+        )
         .first()
     )
     if not question:
@@ -296,13 +311,23 @@ def delete_question(db: Session, club_id: str, question_id: str) -> None:
     question = (
         db.query(FormQuestion)
         .join(ApplicationForm, FormQuestion.form_id == ApplicationForm.id)
-        .filter(ApplicationForm.club_id == club_id, FormQuestion.id == question_id)
+        .filter(
+            ApplicationForm.club_id == club_id,
+            FormQuestion.id == question_id,
+            FormQuestion.is_active.is_(True),
+        )
         .first()
     )
     if not question:
         raise LookupError("질문을 찾을 수 없습니다.")
 
-    db.delete(question)
+    has_answers = db.query(ApplicationAnswer.id).filter(
+        ApplicationAnswer.question_id == question.id
+    ).first() is not None
+    if has_answers:
+        question.is_active = False
+    else:
+        db.delete(question)
     db.commit()
 
 
@@ -314,7 +339,11 @@ def reorder_questions(db: Session, club_id: str, question_ids: list[str]) -> App
     if not form:
         raise LookupError("활성화된 신청 폼이 없습니다.")
 
-    id_to_question = {q.id: q for q in form.questions}
+    active_questions = db.query(FormQuestion).filter(
+        FormQuestion.form_id == form.id,
+        FormQuestion.is_active.is_(True),
+    ).all()
+    id_to_question = {q.id: q for q in active_questions}
     for idx, qid in enumerate(question_ids):
         if qid not in id_to_question:
             raise ValueError(f"질문 ID를 찾을 수 없습니다: {qid}")

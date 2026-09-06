@@ -68,6 +68,7 @@ class ClubActivityImageResponse(BaseModel):
 class ClubCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=100)
     club_type: Optional[Literal["department", "central"]] = None
+    tagline: Optional[str] = Field(None, max_length=500)
     description: Optional[str] = Field(None, max_length=20_000)
     contact_email: Optional[str] = Field(None, max_length=255)
     contact_phone: Optional[str] = Field(None, max_length=20)
@@ -118,6 +119,7 @@ class ClubCreate(BaseModel):
 class ClubUpdate(BaseModel):
     name: Optional[str] = Field(None, max_length=100)
     club_type: Optional[Literal["department", "central"]] = None
+    tagline: Optional[str] = Field(None, max_length=500)
     description: Optional[str] = Field(None, max_length=20_000)
     contact_email: Optional[str] = Field(None, max_length=255)
     contact_phone: Optional[str] = Field(None, max_length=20)
@@ -162,6 +164,7 @@ class ClubResponse(BaseModel):
     id: str
     name: str
     club_type: Optional[str]
+    tagline: Optional[str]
     description: Optional[str]
     contact_email: Optional[str]
     contact_phone: Optional[str]

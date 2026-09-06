@@ -25,6 +25,7 @@ class Club(TimestampMixin, Base):
     name: Mapped[str] = mapped_column(String(100), unique=True, nullable=False, index=True)
     # 'department': 학과 동아리 / 'central': 중앙 동아리
     club_type: Mapped[str | None] = mapped_column(String(20))
+    tagline: Mapped[str | None] = mapped_column(String(500))
     description: Mapped[str | None] = mapped_column(Text)
     contact_email: Mapped[str | None] = mapped_column(String(255))
     contact_phone: Mapped[str | None] = mapped_column(String(20))

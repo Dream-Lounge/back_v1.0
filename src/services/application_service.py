@@ -61,6 +61,13 @@ def _to_detail_dict(app: Application) -> dict:
 
 
 def _validate_answers(form_questions, answers, require_complete: bool) -> None:
+    # 삭제된 문항은 기존 제출 내역 보존을 위해 DB에는 남아 있지만,
+    # 현재 신청폼의 작성 및 필수 답변 검증 대상에서는 제외한다.
+    form_questions = [
+        question
+        for question in form_questions
+        if getattr(question, "is_active", True)
+    ]
     question_ids = [a.question_id for a in answers]
     if len(question_ids) != len(set(question_ids)):
         raise ValueError("같은 질문에 대한 답변을 중복해서 제출할 수 없습니다.")
@@ -109,7 +116,7 @@ def _applicant_snapshot(user: User, data: ApplicationCreate) -> dict:
         "applicant_name": (data.applicant_name or "").strip() or None,
         "applicant_department": (data.applicant_department or "").strip() or None,
         "applicant_phone": (data.applicant_phone or "").strip() or None,
-        "applicant_grade": data.applicant_grade,
+        "applicant_grade": (data.applicant_grade or "").strip() or None,
     }
     if not data.is_draft and any(not value for value in values.values()):
         raise ValueError("신청자 기본정보를 모두 입력해주세요.")
@@ -207,9 +214,9 @@ def update_application(
     for field, value in snapshot_updates.items():
         if value is not None:
             value = value.strip()
-            if not value:
+            if submitting and not value:
                 raise ValueError("신청자 기본정보를 모두 입력해주세요.")
-            setattr(app, field, value)
+            setattr(app, field, value or None)
 
     if data.answers is not None:
         _validate_answers(form.questions, data.answers, require_complete=submitting)

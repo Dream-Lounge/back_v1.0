@@ -149,5 +149,6 @@ def test_existing_unlinked_auth_user_is_repaired_on_login(db):
     assert session is successful.session
     assert user.auth_user_id == str(existing.id)
     admin_client.auth.admin.update_user_by_id.assert_called_once_with(
-        str(existing.id), {"password": "Password1!"}
+        str(existing.id),
+        {"password": auth_service._supabase_password(user.id, "Password1!")},
     )

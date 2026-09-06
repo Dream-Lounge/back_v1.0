@@ -13,7 +13,9 @@ import src.models  # noqa: F401 — 모든 모델을 Base.metadata에 등록
 config = context.config
 config.set_main_option(
     "sqlalchemy.url",
-    settings.MIGRATION_DATABASE_URL or settings.DATABASE_URL,
+    # ConfigParser treats percent-encoded URL characters (for example %21)
+    # as interpolation syntax unless percent signs are escaped.
+    (settings.MIGRATION_DATABASE_URL or settings.DATABASE_URL).replace("%", "%%"),
 )
 
 if config.config_file_name is not None:

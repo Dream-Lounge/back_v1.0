@@ -1,6 +1,7 @@
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from jose import JWTError
+from supabase_auth.errors import AuthApiError
 import logging
 from sqlalchemy.orm import Session
 from src.db.session import get_db
@@ -14,17 +15,41 @@ def get_current_user(
     credentials: HTTPAuthorizationCredentials = Depends(bearer),
     db: Session = Depends(get_db),
 ):
+    from src.models.user import User
+
     try:
         payload = decode_access_token(credentials.credentials)
         user_id = payload.get("sub")
         if not isinstance(user_id, str) or not user_id:
             raise ValueError
-        from src.models.user import User
         user = db.get(User, user_id)
     except (JWTError, ValueError):
+        # Supabase access token은 프로젝트 서명키로 검증해야 하므로 Auth
+        # 서버에서 사용자 정보를 검증하고 로컬 프로필과 연결한다.
+        try:
+            from src.utils.supabase_client import create_supabase_auth_client
+
+            auth_response = create_supabase_auth_client().auth.get_user(
+                credentials.credentials
+            )
+            auth_user = auth_response.user
+            if not auth_user:
+                raise ValueError
+            user = db.query(User).filter(
+                User.auth_user_id == str(auth_user.id)
+            ).first()
+        except (AuthApiError, ValueError, RuntimeError):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="유효하지 않은 인증 토큰입니다.",
+            )
+    try:
+        if user is None:
+            raise ValueError
+    except ValueError:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="유효하지 않은 인증 토큰입니다.",
+            detail="사용자를 찾을 수 없습니다.",
         )
     except Exception as exc:
         logger.error("인증 처리 중 DB 오류: %s", exc, exc_info=True)
@@ -33,7 +58,7 @@ def get_current_user(
             detail="인증 서비스를 사용할 수 없습니다. 잠시 후 다시 시도해주세요.",
         )
 
-    if not user or not user.is_active:
+    if not user.is_active:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="사용자를 찾을 수 없습니다.",
