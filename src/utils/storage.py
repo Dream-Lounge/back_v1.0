@@ -45,7 +45,11 @@ async def upload_club_image(file: UploadFile, club_id: str) -> str:
         client.storage.from_(settings.SUPABASE_STORAGE_BUCKET).upload(
             path=path,
             file=contents,
-            file_options={"content-type": detected_content_type},
+            # UUID 파일명은 덮어쓰지 않으므로 브라우저/CDN이 안전하게 장기 캐시할 수 있다.
+            file_options={
+                "content-type": detected_content_type,
+                "cache-control": "31536000",
+            },
         )
     except Exception as e:
         logger.error("Supabase Storage upload failed: %s", e, exc_info=True)

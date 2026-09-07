@@ -39,6 +39,30 @@ def test_registration_creates_auth_user_without_listing_all_users(db):
     admin_client.auth.admin.list_users.assert_not_called()
 
 
+def test_registration_releases_db_connection_before_auth_request(db):
+    admin_client = MagicMock()
+    created_user = MagicMock()
+    created_user.id = "00000000-0000-0000-0000-000000000124"
+    created = MagicMock(user=created_user)
+
+    def create_user(_payload):
+        assert not db.in_transaction()
+        return created
+
+    admin_client.auth.admin.create_user.side_effect = create_user
+
+    with (
+        patch.object(settings, "SUPABASE_SERVICE_KEY", "test-secret"),
+        patch("src.services.auth_service.get_supabase_admin_client", return_value=admin_client),
+    ):
+        user = auth_service.register_user(
+            db,
+            auth_service.UserCreate(student_id="2021999998", password="1234"),
+        )
+
+    assert user.auth_user_id == str(created_user.id)
+
+
 def test_rejects_file_whose_content_does_not_match_mime(client, president_headers, seeded_club):
     response = client.post(
         f"/api/v1/clubs/{seeded_club['club'].id}/images",

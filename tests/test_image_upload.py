@@ -22,10 +22,12 @@ def _jpeg_file(name: str = "photo.jpg", size: int = 1024):
 
 class TestImageUpload:
     def test_upload_success(self, client, president_headers, seeded_club):
-        with patch("src.utils.storage.get_supabase_admin_client", return_value=_mock_supabase()):
+        storage = _mock_supabase()
+        with patch("src.utils.storage.get_supabase_admin_client", return_value=storage):
             resp = client.post(upload_url(seeded_club["club"].id), headers=president_headers, files={"file": _jpeg_file()})
         assert resp.status_code == 200
         assert resp.json()["image_url"] == FAKE_PUBLIC_URL
+        assert storage.storage.from_.return_value.upload.call_args.kwargs["file_options"]["cache-control"] == "31536000"
 
     def test_requires_auth(self, client, seeded_club):
         resp = client.post(upload_url(seeded_club["club"].id), files={"file": _jpeg_file()})

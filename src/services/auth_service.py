@@ -3,6 +3,7 @@ import hmac
 import secrets
 import logging
 from datetime import datetime, timedelta
+from uuid import uuid4
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
 from supabase_auth.errors import AuthApiError
@@ -177,7 +178,13 @@ def register_user(db: Session, data: UserCreate) -> User:
     if db.query(User).filter(User.student_id == data.student_id).first():
         raise ValueError("이미 가입된 회원 정보입니다.")
 
+    # 중복 확인으로 열린 읽기 트랜잭션을 먼저 끝낸다. 이후 Supabase Auth
+    # 네트워크 호출 동안 SQLAlchemy 풀 연결을 점유하지 않게 한다.
+    db.rollback()
+
+    user_id = str(uuid4())
     user = User(
+        id=user_id,
         auth_user_id=None,
         student_id=data.student_id,
         password_hash=hash_password(data.password),
@@ -191,12 +198,9 @@ def register_user(db: Session, data: UserCreate) -> User:
     )
     auth_user_id: str | None = None
     try:
-        db.add(user)
-        db.flush()
-
         if settings.SUPABASE_SERVICE_KEY:
             admin = get_supabase_admin_client().auth.admin
-            internal_password = _supabase_password(user.id, data.password)
+            internal_password = _supabase_password(user_id, data.password)
             try:
                 created = admin.create_user({
                     "email": user.email,
@@ -213,11 +217,16 @@ def register_user(db: Session, data: UserCreate) -> User:
                 raise
 
             user.auth_user_id = auth_user_id
+        db.add(user)
         db.commit()
-        db.refresh(user)
         return user
     except IntegrityError as exc:
         db.rollback()
+        if auth_user_id:
+            try:
+                get_supabase_admin_client().auth.admin.delete_user(auth_user_id)
+            except Exception:
+                logger.exception("DB 가입 충돌 후 Supabase Auth 계정 정리에 실패했습니다.")
         raise ValueError("이미 가입된 회원 정보입니다.") from exc
     except Exception:
         db.rollback()
@@ -335,6 +344,13 @@ def create_supabase_session(db: Session, user: User, password: str):
     """Supabase Auth 세션을 만들고 기존 계정은 최초 로그인 시 안전하게 연결한다."""
     if not settings.SUPABASE_SERVICE_KEY:
         return None
+
+    # 정상적으로 연결된 사용자의 로그인은 아래에서 외부 Auth API를 기다린다.
+    # 필요한 스칼라 값은 이미 로드됐으므로 객체를 분리하고 읽기 트랜잭션을
+    # 끝내 DB 풀 연결을 다른 요청이 즉시 사용할 수 있게 한다.
+    if user.auth_user_id:
+        db.expunge(user)
+        db.rollback()
 
     auth_client = create_supabase_auth_client()
     internal_password = _supabase_password(user.id, password)

@@ -14,9 +14,9 @@ class Settings(BaseSettings):
     ENVIRONMENT: str = "development"
     LOG_LEVEL: str = "INFO"
     APP_DEBUG: bool = False
-    DB_POOL_SIZE: int = 3
-    DB_MAX_OVERFLOW: int = 1
-    DB_POOL_TIMEOUT_SECONDS: int = 10
+    DB_POOL_SIZE: int = 5
+    DB_MAX_OVERFLOW: int = 3
+    DB_POOL_TIMEOUT_SECONDS: int = 15
     DB_POOL_RECYCLE_SECONDS: int = 300
 
     SECRET_KEY: str
@@ -38,7 +38,9 @@ class Settings(BaseSettings):
 
     LOGIN_MAX_ATTEMPTS: int = 5
     LOGIN_LOCK_MINUTES: int = 15
-    LOGIN_IP_MAX_ATTEMPTS: int = 30
+    # 교내 NAT/프록시처럼 여러 사용자가 하나의 IP를 공유하는 환경을 고려한다.
+    # 개별 학번은 LOGIN_MAX_ATTEMPTS로 별도 제한한다.
+    LOGIN_IP_MAX_ATTEMPTS: int = 500
     REGISTRATION_IP_MAX_PER_HOUR: int = 500
     IMAGE_UPLOAD_MAX_PER_HOUR: int = 20
     TRUST_PROXY_HEADERS: bool = False

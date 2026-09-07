@@ -3,6 +3,7 @@ class TestListClubs:
         resp = client.get("/api/v1/clubs")
 
         assert resp.status_code == 200
+        assert resp.headers["cache-control"].startswith("public, max-age=30")
         assert seeded_club["club"].id in {club["id"] for club in resp.json()}
 
     def test_searches_by_partial_club_name(self, client, seeded_club):
@@ -92,6 +93,7 @@ class TestGetClub:
         club = seeded_club["club"]
         resp = client.get(f"/api/v1/clubs/{club.id}")
         assert resp.status_code == 200
+        assert resp.headers["cache-control"].startswith("public, max-age=30")
         data = resp.json()
         assert data["id"] == club.id
         assert data["name"] == "테스트동아리"

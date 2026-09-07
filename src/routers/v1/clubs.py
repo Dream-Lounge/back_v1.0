@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query, Request, status
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query, Request, Response, status
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from src.db.session import get_db
@@ -14,6 +14,8 @@ from src.utils.storage import upload_club_image
 from src.utils.client_ip import get_rate_limit_client_ip
 
 router = APIRouter(prefix="/clubs", tags=["clubs"])
+
+PUBLIC_CLUB_CACHE_CONTROL = "public, max-age=30, s-maxage=60, stale-while-revalidate=300"
 
 
 class ImageUploadResponse(BaseModel):
@@ -48,19 +50,22 @@ async def upload_image(
 
 @router.get("", response_model=list[ClubResponse])
 def list_clubs(
+    response: Response,
     search: str | None = Query(default=None, max_length=100),
     db: Session = Depends(get_db),
 ):
     """동아리 목록 조회. search 입력 시 동아리 이름 또는 분과로 부분 검색."""
+    response.headers["Cache-Control"] = PUBLIC_CLUB_CACHE_CONTROL
     return club_service.get_clubs(db, search)
 
 
 @router.get("/{club_id}", response_model=ClubResponse)
-def get_club(club_id: str, db: Session = Depends(get_db)):
+def get_club(club_id: str, response: Response, db: Session = Depends(get_db)):
     """동아리 상세 조회 (비회원 포함)."""
     club = club_service.get_club(db, club_id)
     if not club:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="동아리를 찾을 수 없습니다.")
+    response.headers["Cache-Control"] = PUBLIC_CLUB_CACHE_CONTROL
     return club
 
 

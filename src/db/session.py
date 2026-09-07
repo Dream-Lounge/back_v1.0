@@ -13,7 +13,12 @@ engine = create_engine(
     pool_timeout=settings.DB_POOL_TIMEOUT_SECONDS,
 )
 
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+SessionLocal = sessionmaker(
+    autocommit=False,
+    autoflush=False,
+    expire_on_commit=False,
+    bind=engine,
+)
 
 
 def get_db():
