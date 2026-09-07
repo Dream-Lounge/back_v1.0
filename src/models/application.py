@@ -1,7 +1,7 @@
 from __future__ import annotations
 from uuid import uuid4
 from datetime import datetime
-from sqlalchemy import String, Boolean, Text, Integer, DateTime, ForeignKey, JSON
+from sqlalchemy import String, Boolean, Text, Integer, DateTime, ForeignKey, JSON, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from src.db.base import Base, TimestampMixin
 
@@ -42,6 +42,9 @@ class FormQuestion(Base):
 
 class Application(Base):
     __tablename__ = "applications"
+    __table_args__ = (
+        UniqueConstraint("form_id", "user_id", name="uq_applications_form_user"),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
     form_id: Mapped[str] = mapped_column(String(36), ForeignKey("application_forms.id"), nullable=False)
@@ -57,6 +60,9 @@ class Application(Base):
     applicant_phone: Mapped[str | None] = mapped_column(String(20), nullable=True)
     applicant_grade: Mapped[str | None] = mapped_column(String(1), nullable=True)
     admin_comment: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # 제출 시점의 폼/문항을 보존한다. 이후 관리자가 활성 폼을 수정해도
+    # 이미 제출된 지원서의 질문과 선택지는 바뀌지 않는다.
+    form_snapshot: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False
     )

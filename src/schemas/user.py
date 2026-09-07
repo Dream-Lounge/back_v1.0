@@ -1,20 +1,6 @@
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, Field
 from datetime import datetime
 from typing import Optional
-
-
-class EmailVerifySendRequest(BaseModel):
-    email: EmailStr
-
-
-class EmailVerifyConfirmRequest(BaseModel):
-    email: EmailStr
-    code: str = Field(..., min_length=6, max_length=6, pattern=r"^\d{6}$")
-
-
-class EmailVerifyConfirmResponse(BaseModel):
-    message: str
-    verification_token: str
 
 
 class PrivacyConsentCreate(BaseModel):
@@ -23,7 +9,7 @@ class PrivacyConsentCreate(BaseModel):
 
 
 class UserCreate(BaseModel):
-    """가두모집용 간편 계정: 프런트와 동일하게 학번과 PIN만 받는다."""
+    """간소화 버전 계정: 학번과 숫자 4자리 PIN만 받는다."""
 
     student_id: str = Field(..., pattern=r"^\d{10}$")
     password: str = Field(..., pattern=r"^\d{4}$")
@@ -46,7 +32,6 @@ class UserInfo(BaseModel):
     id: str
     student_id: str
     name: str
-    email: str
     phone: Optional[str]
     department: Optional[str]
 
@@ -54,9 +39,7 @@ class UserInfo(BaseModel):
 
 
 class TokenResponse(BaseModel):
-    access_token: str
-    refresh_token: Optional[str] = None
-    token_type: str = "bearer"
+    token_type: str = "cookie"
     user: UserInfo
 
 
@@ -64,10 +47,8 @@ class UserResponse(BaseModel):
     id: str
     student_id: str
     name: str
-    email: str
     phone: Optional[str]
     department: Optional[str]
-    email_verified: bool
     created_at: datetime
 
     model_config = {"from_attributes": True}

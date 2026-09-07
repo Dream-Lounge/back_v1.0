@@ -8,7 +8,6 @@ class MemberResponse(BaseModel):
     name: str
     student_id: str
     department: Optional[str]
-    email: str
     phone: Optional[str]
     role: str
     joined_at: datetime

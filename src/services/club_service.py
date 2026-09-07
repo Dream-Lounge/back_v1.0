@@ -13,7 +13,6 @@ def get_clubs(db: Session, search: str | None = None) -> list[Club]:
         db.query(Club)
         .options(
             selectinload(Club.tags),
-            selectinload(Club.members),
             selectinload(Club.activity_image_records),
         )
     )

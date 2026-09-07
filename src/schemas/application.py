@@ -40,6 +40,11 @@ class ApplicationUpdate(BaseModel):
 class ApplicationAnswerResponse(BaseModel):
     question_id: str
     answer_text: Optional[str]
+    question_text: Optional[str] = None
+    question_type: Optional[str] = None
+    is_required: Optional[bool] = None
+    order_index: Optional[int] = None
+    options: Optional[List[str]] = None
 
     model_config = {"from_attributes": True}
 
@@ -49,6 +54,8 @@ class ApplicationResponse(BaseModel):
     form_id: str
     club_id: Optional[str] = None
     club_name: Optional[str] = None
+    club_image: Optional[str] = None
+    club_category: Optional[str] = None
     status: str
     is_draft: bool
     submitted_at: Optional[datetime]
@@ -60,6 +67,7 @@ class ApplicationResponse(BaseModel):
     applicant_phone: Optional[str] = None
     applicant_grade: Optional[str] = None
     answers: List[ApplicationAnswerResponse] = Field(default_factory=list)
+    form_snapshot: Optional[dict] = None
 
     model_config = {"from_attributes": True}
 
@@ -69,6 +77,8 @@ class ApplicationListItem(BaseModel):
     form_id: str
     club_id: Optional[str] = None
     club_name: Optional[str] = None
+    club_image: Optional[str] = None
+    club_category: Optional[str] = None
     status: str
     is_draft: bool
     submitted_at: Optional[datetime]
@@ -116,5 +126,6 @@ class AdminApplicationResponse(BaseModel):
     applicant_phone: Optional[str] = None
     applicant_grade: Optional[str] = None
     answers: List[ApplicationAnswerResponse] = Field(default_factory=list)
+    form_snapshot: Optional[dict] = None
 
     model_config = {"from_attributes": True}

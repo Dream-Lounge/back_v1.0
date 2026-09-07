@@ -5,95 +5,8 @@ from supabase_auth.errors import AuthApiError
 
 from src.core.config import settings
 from src.core.security import hash_password
-from src.models.user import EmailVerification, User
+from src.models.user import User
 from src.services import auth_service
-
-
-def test_email_verification_code_is_hashed_at_rest(client, db):
-    with patch("src.services.auth_service.send_verification_email") as send:
-        response = client.post(
-            "/api/v1/auth/email-verify/send", json={"email": "secure@cju.ac.kr"}
-        )
-
-    plain_code = send.call_args.args[1]
-    record = db.query(EmailVerification).filter_by(email="secure@cju.ac.kr").one()
-    assert response.status_code == 200
-    assert len(record.code) == 64
-    assert record.code != plain_code
-
-
-def test_email_send_cooldown_returns_429(client):
-    with patch("src.services.auth_service.send_verification_email"):
-        first = client.post(
-            "/api/v1/auth/email-verify/send", json={"email": "cooldown@cju.ac.kr"}
-        )
-        second = client.post(
-            "/api/v1/auth/email-verify/send", json={"email": "cooldown@cju.ac.kr"}
-        )
-
-    assert first.status_code == 200
-    assert second.status_code == 429
-
-
-def test_verification_code_locks_after_max_failures(client, db):
-    with patch("src.services.auth_service.send_verification_email"):
-        client.post(
-            "/api/v1/auth/email-verify/send", json={"email": "attempts@cju.ac.kr"}
-        )
-
-    with patch.object(settings, "EMAIL_VERIFY_MAX_ATTEMPTS", 2):
-        for _ in range(2):
-            response = client.post(
-                "/api/v1/auth/email-verify/confirm",
-                json={"email": "attempts@cju.ac.kr", "code": "000000"},
-            )
-
-    record = db.query(EmailVerification).filter_by(email="attempts@cju.ac.kr").one()
-    assert response.status_code == 400
-    assert record.is_used is True
-    assert record.attempt_count == 2
-
-
-def test_confirmed_email_uses_hashed_one_time_registration_token(client, db):
-    with patch("src.services.auth_service.send_verification_email") as send:
-        client.post(
-            "/api/v1/auth/email-verify/send",
-            json={"email": "one-time@cju.ac.kr"},
-        )
-
-    confirm = client.post(
-        "/api/v1/auth/email-verify/confirm",
-        json={"email": "one-time@cju.ac.kr", "code": send.call_args.args[1]},
-    )
-    token = confirm.json()["verification_token"]
-    record = db.query(EmailVerification).filter_by(email="one-time@cju.ac.kr").one()
-
-    assert confirm.status_code == 200
-    assert len(token) >= 32
-    assert record.confirmation_token_hash is not None
-    assert record.confirmation_token_hash != token
-
-def test_resend_invalidates_previously_confirmed_token(client, db):
-    email = "resend-token@cju.ac.kr"
-    with patch("src.services.auth_service.send_verification_email") as send:
-        client.post("/api/v1/auth/email-verify/send", json={"email": email})
-    confirm = client.post(
-        "/api/v1/auth/email-verify/confirm",
-        json={"email": email, "code": send.call_args.args[1]},
-    )
-    assert confirm.status_code == 200
-
-    with (
-        patch("src.services.auth_service.send_verification_email"),
-        patch.object(settings, "EMAIL_SEND_COOLDOWN_SECONDS", 0),
-    ):
-        resend = client.post("/api/v1/auth/email-verify/send", json={"email": email})
-
-    old_record = db.query(EmailVerification).filter_by(email=email).order_by(
-        EmailVerification.created_at.asc()
-    ).first()
-    assert resend.status_code == 200
-    assert old_record.confirmation_token_hash is None
 
 
 def test_simple_logout_does_not_call_supabase(client, auth_headers):
@@ -104,10 +17,32 @@ def test_simple_logout_does_not_call_supabase(client, auth_headers):
     revoke.assert_not_called()
 
 
-def test_rejects_file_whose_content_does_not_match_mime(client, auth_headers):
+def test_registration_creates_auth_user_without_listing_all_users(db):
+    admin_client = MagicMock()
+    created_user = MagicMock()
+    created_user.id = "00000000-0000-0000-0000-000000000123"
+    created = MagicMock()
+    created.user = created_user
+    admin_client.auth.admin.create_user.return_value = created
+
+    with (
+        patch.object(settings, "SUPABASE_SERVICE_KEY", "test-secret"),
+        patch("src.services.auth_service.get_supabase_admin_client", return_value=admin_client),
+    ):
+        user = auth_service.register_user(
+            db,
+            auth_service.UserCreate(student_id="2021999999", password="1234"),
+        )
+
+    assert user.auth_user_id == str(created_user.id)
+    admin_client.auth.admin.create_user.assert_called_once()
+    admin_client.auth.admin.list_users.assert_not_called()
+
+
+def test_rejects_file_whose_content_does_not_match_mime(client, president_headers, seeded_club):
     response = client.post(
-        "/api/v1/clubs/images",
-        headers=auth_headers,
+        f"/api/v1/clubs/{seeded_club['club'].id}/images",
+        headers=president_headers,
         files={"file": ("fake.jpg", io.BytesIO(b"not an image"), "image/jpeg")},
     )
     assert response.status_code == 400

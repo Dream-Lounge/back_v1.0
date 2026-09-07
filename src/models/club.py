@@ -54,10 +54,6 @@ class Club(TimestampMixin, Base):
     )
 
     @property
-    def member_count(self) -> int:
-        return sum(1 for m in self.members if m.status == "active")
-
-    @property
     def activity_image_details(self) -> list[dict]:
         """사진 설명을 제공하되 기존 activity_images 응답은 그대로 유지한다."""
         return [

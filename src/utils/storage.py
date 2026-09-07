@@ -24,7 +24,7 @@ def _detect_image_type(contents: bytes) -> tuple[str, str] | None:
     return None
 
 
-async def upload_club_image(file: UploadFile) -> str:
+async def upload_club_image(file: UploadFile, club_id: str) -> str:
     """이미지 파일을 Supabase Storage에 업로드하고 퍼블릭 URL을 반환한다."""
     if file.content_type not in ALLOWED_CONTENT_TYPES:
         raise ValueError("지원하지 않는 파일 형식입니다. jpg, png, webp, gif만 허용됩니다.")
@@ -38,7 +38,7 @@ async def upload_club_image(file: UploadFile) -> str:
     if not detected or detected[0] != file.content_type:
         raise ValueError("파일 내용과 이미지 형식이 일치하지 않습니다.")
     detected_content_type, ext = detected
-    path = f"clubs/{uuid.uuid4()}.{ext}"
+    path = f"clubs/{club_id}/{uuid.uuid4()}.{ext}"
 
     client = get_supabase_admin_client()
     try:

@@ -1,6 +1,7 @@
 from datetime import datetime
 import json
 from sqlalchemy import or_
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
 from src.models.application import Application, ApplicationAnswer, ApplicationForm
@@ -31,11 +32,14 @@ def _ensure_not_club_president(
 
 
 def _to_list_dict(app: Application) -> dict:
+    club = app.form.club if app.form else None
     return {
         "id": app.id,
         "form_id": app.form_id,
         "club_id": app.form.club_id if app.form else None,
-        "club_name": app.form.club.name if (app.form and app.form.club) else None,
+        "club_name": club.name if club else None,
+        "club_image": club.image_url if club else None,
+        "club_category": (club.division or club.club_type) if club else None,
         "status": app.status,
         "is_draft": app.is_draft,
         "submitted_at": app.submitted_at,
@@ -46,10 +50,25 @@ def _to_list_dict(app: Application) -> dict:
 
 def _to_detail_dict(app: Application) -> dict:
     d = _to_list_dict(app)
+    snapshot = app.form_snapshot if isinstance(app.form_snapshot, dict) else None
+    snapshot_questions = {
+        item.get("id"): item
+        for item in (snapshot or {}).get("questions", [])
+        if isinstance(item, dict) and isinstance(item.get("id"), str)
+    }
     d["answers"] = [
-        {"question_id": a.question_id, "answer_text": a.answer_text}
+        {
+            "question_id": a.question_id,
+            "answer_text": a.answer_text,
+            "question_text": snapshot_questions.get(a.question_id, {}).get("question_text"),
+            "question_type": snapshot_questions.get(a.question_id, {}).get("question_type"),
+            "is_required": snapshot_questions.get(a.question_id, {}).get("is_required"),
+            "order_index": snapshot_questions.get(a.question_id, {}).get("order_index"),
+            "options": snapshot_questions.get(a.question_id, {}).get("options"),
+        }
         for a in app.answers
     ]
+    d["form_snapshot"] = snapshot
     d.update({
         "applicant_student_id": app.applicant_student_id,
         "applicant_name": app.applicant_name,
@@ -58,6 +77,28 @@ def _to_detail_dict(app: Application) -> dict:
         "applicant_grade": app.applicant_grade,
     })
     return d
+
+
+def _form_snapshot(form: ApplicationForm) -> dict:
+    questions = sorted(
+        (question for question in form.questions if getattr(question, "is_active", True)),
+        key=lambda question: question.order_index,
+    )
+    return {
+        "id": form.id,
+        "title": form.title,
+        "questions": [
+            {
+                "id": question.id,
+                "question_text": question.question_text,
+                "question_type": question.question_type,
+                "is_required": question.is_required,
+                "order_index": question.order_index,
+                "options": question.options if isinstance(question.options, list) else None,
+            }
+            for question in questions
+        ],
+    }
 
 
 def _validate_answers(form_questions, answers, require_complete: bool) -> None:
@@ -160,19 +201,24 @@ def create_application(db: Session, user: User, data: ApplicationCreate) -> dict
         is_draft=data.is_draft,
         status="draft" if data.is_draft else "submitted",
         submitted_at=None if data.is_draft else now,
+        form_snapshot=None if data.is_draft else _form_snapshot(form),
         **applicant_snapshot,
     )
-    db.add(app)
-    db.flush()
+    try:
+        db.add(app)
+        db.flush()
 
-    for ans in data.answers:
-        db.add(ApplicationAnswer(
-            application_id=app.id,
-            question_id=ans.question_id,
-            answer_text=ans.answer_text,
-        ))
+        for ans in data.answers:
+            db.add(ApplicationAnswer(
+                application_id=app.id,
+                question_id=ans.question_id,
+                answer_text=ans.answer_text,
+            ))
 
-    db.commit()
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise ValueError("이미 임시저장하거나 제출한 신청서가 있습니다.") from exc
 
     result = (
         db.query(Application)
@@ -250,6 +296,7 @@ def update_application(
         app.is_draft = False
         app.status = "submitted"
         app.submitted_at = datetime.utcnow()
+        app.form_snapshot = _form_snapshot(form)
 
     db.commit()
 

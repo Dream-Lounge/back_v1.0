@@ -10,9 +10,8 @@ from supabase_auth.errors import AuthApiError
 from src.core.config import settings
 from src.core.security import hash_password, verify_password
 from src.models.club_member import ClubMember
-from src.models.user import User, PrivacyConsent, EmailVerification, AuthRateLimit, AuthSession
+from src.models.user import User, PrivacyConsent, AuthRateLimit, AuthSession
 from src.schemas.user import UserCreate
-from src.utils.email import send_verification_email
 from src.utils.supabase_client import (
     create_supabase_auth_client,
     get_supabase_admin_client,
@@ -29,10 +28,6 @@ class RateLimitExceeded(ValueError):
     """요청 횟수 제한 초과."""
 
 
-def _generate_code() -> str:
-    return f"{secrets.randbelow(1_000_000):06d}"
-
-
 def _fingerprint(value: str) -> str:
     return hmac.new(
         settings.SECRET_KEY.encode("utf-8"),
@@ -44,21 +39,6 @@ def _fingerprint(value: str) -> str:
 def _supabase_password(user_id: str, pin: str) -> str:
     """4자리 PIN을 Supabase Auth용 고강도 내부 비밀번호로 파생한다."""
     return f"Dl1!{_fingerprint(f'supabase-password:{user_id}:{pin}')}"
-
-
-def _code_digest(email: str, code: str) -> str:
-    return _fingerprint(f"email-code:{email}:{code}")
-
-
-def _confirmation_token_digest(email: str, token: str) -> str:
-    return _fingerprint(f"email-confirmation:{email}:{token}")
-
-
-def _code_matches(record: EmailVerification, code: str) -> bool:
-    expected = _code_digest(record.email, code)
-    # 기존 10자 이하 평문 레코드는 만료될 때까지만 호환한다.
-    stored = record.code if len(record.code) > 10 else code
-    return hmac.compare_digest(stored, expected if len(record.code) > 10 else record.code)
 
 
 def _rate_subject(action: str, subject: str) -> str:
@@ -179,122 +159,21 @@ def enforce_image_upload_rate_limit(
 
 
 def enforce_registration_rate_limit(
-    db: Session, email: str, student_id: str, client_ip: str | None = None
+    db: Session, student_id: str, client_ip: str | None = None
 ) -> None:
-    """유효한 인증 토큰을 가진 요청도 무제한 학번 조회에 사용하지 못하게 제한한다."""
+    """회원가입 요청을 학번과 IP 기준으로 제한한다."""
     since = datetime.utcnow() - timedelta(hours=1)
-    subject = f"{email}|{student_id}"
     subject_count, ip_count = _recent_event_count(
-        db, "registration_attempt", subject, since, client_ip
+        db, "registration_attempt", student_id, since, client_ip
     )
     if subject_count >= 5 or ip_count >= settings.REGISTRATION_IP_MAX_PER_HOUR:
         raise RateLimitExceeded("회원가입 요청이 너무 많습니다. 잠시 후 다시 시도해주세요.")
-    _record_event(db, "registration_attempt", subject, client_ip)
+    _record_event(db, "registration_attempt", student_id, client_ip)
     db.commit()
-
-
-def _get_current_verification(db: Session, email: str) -> EmailVerification | None:
-    return db.query(EmailVerification).filter(
-        EmailVerification.email == email,
-        EmailVerification.is_used.is_(False),
-        EmailVerification.expires_at > datetime.utcnow(),
-    ).order_by(EmailVerification.created_at.desc()).first()
-
-
-def _require_valid_verification(
-    db: Session, email: str, code: str
-) -> EmailVerification:
-    record = _get_current_verification(db, email)
-    if not record or record.attempt_count >= settings.EMAIL_VERIFY_MAX_ATTEMPTS:
-        raise ValueError("인증번호가 올바르지 않거나 만료되었습니다.")
-    if not _code_matches(record, code):
-        record.attempt_count += 1
-        if record.attempt_count >= settings.EMAIL_VERIFY_MAX_ATTEMPTS:
-            record.is_used = True
-        db.commit()
-        raise ValueError("인증번호가 올바르지 않거나 만료되었습니다.")
-    return record
-
-
-def send_verification_code(db: Session, email: str, client_ip: str | None = None) -> None:
-    """청주대 이메일로 6자리 인증번호 발송. 이전 대기 레코드는 모두 만료 처리."""
-    if not email.lower().endswith(f"@{settings.CJU_EMAIL_DOMAIN}"):
-        raise ValueError(f"청주대학교 이메일(@{settings.CJU_EMAIL_DOMAIN})만 사용할 수 있습니다.")
-
-    now = datetime.utcnow()
-    subject_count, ip_count = _recent_event_count(
-        db, "email_send", email, now - timedelta(hours=1), client_ip
-    )
-    latest_event = db.query(AuthRateLimit).filter(
-        AuthRateLimit.action == "email_send",
-        AuthRateLimit.subject_hash == _rate_subject("email_send", email),
-    ).order_by(AuthRateLimit.created_at.desc()).first()
-    if latest_event and latest_event.created_at > now - timedelta(
-        seconds=settings.EMAIL_SEND_COOLDOWN_SECONDS
-    ):
-        raise RateLimitExceeded("인증번호는 잠시 후 다시 요청할 수 있습니다.")
-    if subject_count >= settings.EMAIL_SEND_MAX_PER_HOUR or ip_count >= 20:
-        raise RateLimitExceeded("인증번호 요청이 너무 많습니다. 한 시간 후 다시 시도해주세요.")
-
-    code = _generate_code()
-
-    # 재발송 시 이전 번호와 이미 발급된 회원가입 토큰을 모두 폐기한다.
-    db.query(EmailVerification).filter(
-        EmailVerification.email == email,
-    ).update({
-        "is_used": True,
-        "confirmation_token_hash": None,
-    })
-
-    db.add(EmailVerification(
-        email=email,
-        code=_code_digest(email, code),
-        is_used=False,
-        attempt_count=0,
-        expires_at=datetime.utcnow() + timedelta(minutes=settings.EMAIL_VERIFICATION_EXPIRY_MINUTES),
-    ))
-    _record_event(db, "email_send", email, client_ip)
-    db.commit()
-
-    send_verification_email(email, code)
-
-
-def confirm_verification_code(db: Session, email: str, code: str) -> str:
-    """인증번호를 일회용 회원가입 토큰으로 교환한다."""
-    record = _require_valid_verification(db, email, code)
-    token = secrets.token_urlsafe(32)
-    record.is_used = True
-    record.confirmed_at = datetime.utcnow()
-    record.confirmation_token_hash = _confirmation_token_digest(email, token)
-    db.commit()
-    return token
-
-
-def _require_valid_confirmation_token(
-    db: Session, email: str, token: str
-) -> EmailVerification:
-    records = (
-        db.query(EmailVerification)
-        .filter(
-            EmailVerification.email == email,
-            EmailVerification.is_used.is_(True),
-            EmailVerification.confirmed_at.is_not(None),
-            EmailVerification.confirmation_token_hash.is_not(None),
-            EmailVerification.expires_at > datetime.utcnow(),
-        )
-        .order_by(EmailVerification.confirmed_at.desc())
-        .limit(5)
-        .all()
-    )
-    expected = _confirmation_token_digest(email, token)
-    for record in records:
-        if hmac.compare_digest(record.confirmation_token_hash or "", expected):
-            return record
-    raise ValueError("이메일 인증이 만료되었거나 유효하지 않습니다.")
 
 
 def register_user(db: Session, data: UserCreate) -> User:
-    """학번과 4자리 PIN으로 DB 사용자와 Supabase Auth 계정을 함께 생성한다."""
+    """학번과 4자리 PIN으로 DB 사용자와 Supabase Auth 계정을 생성한다."""
     if db.query(User).filter(User.student_id == data.student_id).first():
         raise ValueError("이미 가입된 회원 정보입니다.")
 
@@ -305,6 +184,8 @@ def register_user(db: Session, data: UserCreate) -> User:
         name=data.student_id,
         phone=None,
         department=None,
+        # Supabase Auth의 email/password 공급자를 쓰기 위한 내부 식별자다.
+        # 실제 학생 이메일이 아니며 API 응답이나 화면에는 노출하지 않는다.
         email=f"{data.student_id}@simple.dreamlounge.local",
         email_verified=False,
     )
@@ -316,16 +197,7 @@ def register_user(db: Session, data: UserCreate) -> User:
         if settings.SUPABASE_SERVICE_KEY:
             admin = get_supabase_admin_client().auth.admin
             internal_password = _supabase_password(user.id, data.password)
-            existing = _find_auth_user_by_email(user.email)
-            if existing:
-                linked = db.query(User).filter(
-                    User.auth_user_id == str(existing.id), User.id != user.id
-                ).first()
-                if linked:
-                    raise ValueError("이미 가입된 인증 계정입니다.")
-                admin.update_user_by_id(str(existing.id), {"password": internal_password})
-                auth_user_id = str(existing.id)
-            else:
+            try:
                 created = admin.create_user({
                     "email": user.email,
                     "password": internal_password,
@@ -333,6 +205,12 @@ def register_user(db: Session, data: UserCreate) -> User:
                     "app_metadata": {"student_id": user.student_id},
                 })
                 auth_user_id = str(created.user.id)
+            except AuthApiError as exc:
+                # 회원가입마다 Auth 사용자 전체를 순회하지 않는다. Supabase가
+                # 원자적으로 판정한 중복 오류 코드만 사용자 오류로 변환한다.
+                if exc.code in {"email_exists", "user_already_exists"}:
+                    raise ValueError("이미 가입된 인증 계정입니다.") from exc
+                raise
 
             user.auth_user_id = auth_user_id
         db.commit()
@@ -579,13 +457,12 @@ def withdraw_user(db: Session, user: User) -> None:
         membership.status = "withdrawn"
         membership.left_at = withdrawn_at
 
-    original_email = user.email
     original_student_id = user.student_id
     auth_user_id = user.auth_user_id
 
     # 활동 기록의 외래 키는 유지하되 개인정보와 고유값은 제거한다.
-    # 따라서 기존 게시글/지원서는 탈퇴 사용자 기록으로 남고, 같은 학번과
-    # 이메일은 새로운 계정에서 다시 사용할 수 있다.
+    # 따라서 기존 게시글/지원서는 탈퇴 사용자 기록으로 남고 같은 학번은
+    # 새로운 계정에서 다시 사용할 수 있다.
     user.auth_user_id = None
     user.student_id = f"deleted_{user.id.replace('-', '')[:12]}"
     user.password_hash = hash_password(secrets.token_urlsafe(32))
@@ -600,14 +477,8 @@ def withdraw_user(db: Session, user: User) -> None:
     db.query(PrivacyConsent).filter(
         PrivacyConsent.user_id == user.id,
     ).delete(synchronize_session=False)
-    db.query(EmailVerification).filter(
-        EmailVerification.email == original_email,
-    ).delete(synchronize_session=False)
     db.query(AuthRateLimit).filter(
-        AuthRateLimit.subject_hash.in_([
-            _rate_subject("email_send", original_email),
-            _rate_subject("login_failure", original_student_id),
-        ])
+        AuthRateLimit.subject_hash == _rate_subject("login_failure", original_student_id)
     ).delete(synchronize_session=False)
     db.query(AuthSession).filter(AuthSession.user_id == user.id).delete(
         synchronize_session=False

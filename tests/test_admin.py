@@ -361,6 +361,7 @@ class TestPostBoard:
         assert posts[0]["is_notice"] is True
 
     def test_list_posts_requires_active_membership(self, client, setup):
+        client.cookies.clear()
         unauthenticated = client.get(
             f"/api/v1/clubs/{setup['club_id']}/posts",
         )

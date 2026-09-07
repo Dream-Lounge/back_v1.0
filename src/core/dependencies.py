@@ -1,4 +1,4 @@
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from jose import JWTError
 from supabase_auth.errors import AuthApiError
@@ -7,18 +7,30 @@ from sqlalchemy.orm import Session
 from src.db.session import get_db
 from src.core.security import decode_access_token
 
-bearer = HTTPBearer()
+bearer = HTTPBearer(auto_error=False)
 logger = logging.getLogger(__name__)
 
 
 def get_current_user(
-    credentials: HTTPAuthorizationCredentials = Depends(bearer),
+    request: Request,
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer),
     db: Session = Depends(get_db),
 ):
     from src.models.user import User
 
+    access_token = (
+        credentials.credentials
+        if credentials is not None
+        else request.cookies.get("dreamlounge_access")
+    )
+    if not access_token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="인증이 필요합니다.",
+        )
+
     try:
-        payload = decode_access_token(credentials.credentials)
+        payload = decode_access_token(access_token)
         user_id = payload.get("sub")
         if not isinstance(user_id, str) or not user_id:
             raise ValueError
@@ -30,7 +42,7 @@ def get_current_user(
             from src.utils.supabase_client import create_supabase_auth_client
 
             auth_response = create_supabase_auth_client().auth.get_user(
-                credentials.credentials
+                access_token
             )
             auth_user = auth_response.user
             if not auth_user:

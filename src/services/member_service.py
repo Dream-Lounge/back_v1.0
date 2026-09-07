@@ -23,7 +23,6 @@ def list_members(db: Session, club_id: str, page: int = 1, size: int = 20) -> di
             "name": m.user.name,
             "student_id": m.user.student_id,
             "department": m.user.department,
-            "email": m.user.email,
             "phone": m.user.phone,
             "role": m.role,
             "joined_at": m.joined_at,

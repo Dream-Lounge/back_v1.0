@@ -1,5 +1,6 @@
 from contextlib import asynccontextmanager
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 from src.core.config import settings
@@ -31,6 +32,27 @@ app.add_middleware(
 )
 
 app.include_router(v1_router, prefix="/api/v1")
+
+
+@app.middleware("http")
+async def protect_cookie_authenticated_writes(request: Request, call_next):
+    """운영에서 쿠키 인증 변경 요청의 출처를 검증해 CSRF를 차단한다."""
+    if (
+        settings.ENVIRONMENT.lower() == "production"
+        and request.method in {"POST", "PATCH", "PUT", "DELETE"}
+        and (
+            request.cookies.get("dreamlounge_access")
+            or request.cookies.get("dreamlounge_refresh")
+        )
+        and not request.headers.get("authorization")
+    ):
+        origin = request.headers.get("origin")
+        if origin not in settings.get_allowed_origins():
+            return JSONResponse(
+                status_code=403,
+                content={"detail": "허용되지 않은 요청 출처입니다."},
+            )
+    return await call_next(request)
 
 
 @app.middleware("http")

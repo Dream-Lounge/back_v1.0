@@ -4,7 +4,6 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
-from unittest.mock import patch
 
 # 테스트가 개발/운영 .env의 Supabase Auth 사용자를 생성하거나 삭제하지 않도록
 # 애플리케이션 설정이 로드되기 전에 외부 Auth 연동을 비활성화한다.
@@ -64,21 +63,23 @@ def client(db):
 
 # ── 공통 헬퍼 ─────────────────────────────────────────────────────────────────
 
-def register_and_login(client, db, student_id: str, email: str, password: str = "1234") -> str:
+def register_and_login(client, db, student_id: str, password: str = "1234") -> str:
     """간편 회원가입 후 로그인하고 access_token을 반환한다."""
-    register = client.post("/api/v1/auth/register", json={
-        "student_id": student_id,
-        "password": password,
-    })
+    register = client.post(
+        "/api/v1/auth/register",
+        json={"student_id": student_id, "password": password},
+    )
     assert register.status_code == 201
 
     resp = client.post("/api/v1/auth/login", json={"student_id": student_id, "password": password})
-    return resp.json()["access_token"]
+    token = client.cookies.get("dreamlounge_access")
+    assert token
+    return token
 
 
 @pytest.fixture
 def user_token(client, db) -> str:
-    return register_and_login(client, db, "2021000001", "user@cju.ac.kr")
+    return register_and_login(client, db, "2021000001")
 
 
 @pytest.fixture
@@ -89,7 +90,9 @@ def auth_headers(user_token) -> dict:
 @pytest.fixture
 def president_token(client, seeded_club) -> str:
     resp = client.post("/api/v1/auth/login", json={"student_id": "PRES0000001", "password": "Password1!"})
-    return resp.json()["access_token"]
+    token = client.cookies.get("dreamlounge_access")
+    assert token
+    return token
 
 
 @pytest.fixture

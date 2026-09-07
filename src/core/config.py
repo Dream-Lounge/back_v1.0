@@ -30,24 +30,16 @@ class Settings(BaseSettings):
     SUPABASE_SERVICE_KEY: str = ""
     SUPABASE_STORAGE_BUCKET: str = "club-images"
 
-    RESEND_API_KEY: str = ""
-    RESEND_FROM_EMAIL: str = "noreply@dreamlounge.dev"
-
     FRONTEND_URL: str = "http://localhost:5173"
     ALLOWED_ORIGINS: str = '["http://localhost:5173", "http://localhost:3000"]'
 
-    EMAIL_VERIFICATION_EXPIRY_MINUTES: int = 30
-    EMAIL_SEND_COOLDOWN_SECONDS: int = 60
-    EMAIL_SEND_MAX_PER_HOUR: int = 5
-    EMAIL_VERIFY_MAX_ATTEMPTS: int = 5
     LOGIN_MAX_ATTEMPTS: int = 5
     LOGIN_LOCK_MINUTES: int = 15
     LOGIN_IP_MAX_ATTEMPTS: int = 30
-    REGISTRATION_IP_MAX_PER_HOUR: int = 30
+    REGISTRATION_IP_MAX_PER_HOUR: int = 500
     IMAGE_UPLOAD_MAX_PER_HOUR: int = 20
     TRUST_PROXY_HEADERS: bool = False
     TRUSTED_PROXY_CIDRS: str = "[]"
-    CJU_EMAIL_DOMAIN: str = "cju.ac.kr"
 
     @field_validator("DATABASE_URL", "MIGRATION_DATABASE_URL", mode="before")
     @classmethod

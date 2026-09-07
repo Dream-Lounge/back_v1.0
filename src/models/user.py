@@ -44,22 +44,6 @@ class PrivacyConsent(Base):
     user = relationship("User", back_populates="privacy_consent")
 
 
-class EmailVerification(Base):
-    __tablename__ = "email_verifications"
-
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
-    email: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
-    # 신규 레코드는 HMAC-SHA256 해시(64자)를 저장한다. 기존 평문 코드는
-    # 만료 시간 동안만 하위 호환으로 검증된다.
-    code: Mapped[str] = mapped_column(String(64), nullable=False)
-    is_used: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
-    attempt_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
-    confirmation_token_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    confirmed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
-    expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
-
-
 class AuthRateLimit(Base):
     __tablename__ = "auth_rate_limits"
     __table_args__ = (

@@ -20,19 +20,20 @@ class ImageUploadResponse(BaseModel):
     image_url: str
 
 
-@router.post("/images", response_model=ImageUploadResponse)
+@router.post("/{club_id}/images", response_model=ImageUploadResponse)
 async def upload_image(
+    club_id: str,
     request: Request,
     file: UploadFile = File(...),
-    current_user=Depends(get_current_user),
+    current_user=Depends(require_club_president),
     db: Session = Depends(get_db),
 ):
-    """동아리 이미지 업로드 (로그인 필요). 반환된 image_url을 동아리 등록·수정 시 사용하세요."""
+    """동아리 이미지 업로드 (해당 동아리 회장 전용)."""
     try:
         auth_service.enforce_image_upload_rate_limit(
             db, current_user.id, get_rate_limit_client_ip(request)
         )
-        url = await upload_club_image(file)
+        url = await upload_club_image(file, club_id)
     except auth_service.RateLimitExceeded as e:
         raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail=str(e))
     except ValueError as e:

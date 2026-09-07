@@ -1,6 +1,5 @@
 from unittest.mock import MagicMock, patch
 from fastapi.testclient import TestClient
-from src.models.user import EmailVerification
 
 
 # ── 헬스체크 ──────────────────────────────────────────────────────────────────
@@ -8,91 +7,6 @@ from src.models.user import EmailVerification
 def test_health(client: TestClient):
     response = client.get("/health")
     assert response.status_code == 200
-
-
-# ── 이메일 인증번호 발송 ───────────────────────────────────────────────────────
-
-class TestEmailVerifySend:
-    def test_success(self, client):
-        with patch("src.services.auth_service.send_verification_email") as mock_send:
-            resp = client.post("/api/v1/auth/email-verify/send", json={"email": "test@cju.ac.kr"})
-        assert resp.status_code == 200
-        mock_send.assert_called_once_with("test@cju.ac.kr", mock_send.call_args[0][1])
-
-    def test_wrong_domain(self, client):
-        resp = client.post("/api/v1/auth/email-verify/send", json={"email": "test@gmail.com"})
-        assert resp.status_code == 400
-
-    def test_invalid_email_format(self, client):
-        resp = client.post("/api/v1/auth/email-verify/send", json={"email": "not-an-email"})
-        assert resp.status_code == 422
-
-    def test_resend_invalidates_previous_code(self, client, db):
-        """재발송 시 이전 코드가 만료 처리되는지 확인."""
-        from src.core.config import settings
-        with (
-            patch("src.services.auth_service.send_verification_email"),
-            patch.object(settings, "EMAIL_SEND_COOLDOWN_SECONDS", 0),
-        ):
-            client.post("/api/v1/auth/email-verify/send", json={"email": "resend@cju.ac.kr"})
-            client.post("/api/v1/auth/email-verify/send", json={"email": "resend@cju.ac.kr"})
-
-        unused = db.query(EmailVerification).filter(
-            EmailVerification.email == "resend@cju.ac.kr",
-            EmailVerification.is_used.is_(False),
-        ).all()
-        assert len(unused) == 1
-
-    def test_send_failure_does_not_fall_back_to_console_code(self, client):
-        with patch(
-            "src.services.auth_service.send_verification_email",
-            side_effect=RuntimeError("email unavailable"),
-        ):
-            resp = client.post(
-                "/api/v1/auth/email-verify/send",
-                json={"email": "failure@cju.ac.kr"},
-            )
-
-        assert resp.status_code == 503
-
-
-# ── 이메일 인증번호 확인 ───────────────────────────────────────────────────────
-
-class TestEmailVerifyConfirm:
-    def test_success(self, client, db):
-        with patch("src.services.auth_service.send_verification_email") as mock_send:
-            client.post("/api/v1/auth/email-verify/send", json={"email": "confirm@cju.ac.kr"})
-        code = mock_send.call_args.args[1]
-
-        resp = client.post("/api/v1/auth/email-verify/confirm", json={
-            "email": "confirm@cju.ac.kr",
-            "code": code,
-        })
-        assert resp.status_code == 200
-
-    def test_wrong_code(self, client, db):
-        with patch("src.services.auth_service.send_verification_email"):
-            client.post("/api/v1/auth/email-verify/send", json={"email": "wrong@cju.ac.kr"})
-
-        resp = client.post("/api/v1/auth/email-verify/confirm", json={
-            "email": "wrong@cju.ac.kr",
-            "code": "000000",
-        })
-        assert resp.status_code == 400
-
-    def test_no_code_sent(self, client):
-        resp = client.post("/api/v1/auth/email-verify/confirm", json={
-            "email": "nobody@cju.ac.kr",
-            "code": "123456",
-        })
-        assert resp.status_code == 400
-
-    def test_code_must_be_6_digits(self, client):
-        resp = client.post("/api/v1/auth/email-verify/confirm", json={
-            "email": "test@cju.ac.kr",
-            "code": "12345",  # 5자리
-        })
-        assert resp.status_code == 422
 
 
 # ── 회원가입 ───────────────────────────────────────────────────────────────────
@@ -108,7 +22,8 @@ class TestRegister:
         assert resp.status_code == 201
         data = resp.json()
         assert data["student_id"] == self.STUDENT_ID
-        assert data["email_verified"] is False
+        assert "email" not in data
+        assert "email_verified" not in data
 
     def test_duplicate_student_id(self, client):
         payload = {"student_id": self.STUDENT_ID, "password": "1234"}
@@ -117,13 +32,17 @@ class TestRegister:
         assert resp.status_code == 400
 
     def test_rejects_non_four_digit_pin(self, client):
-        payload = {"student_id": self.STUDENT_ID, "password": "12345"}
-        resp = client.post("/api/v1/auth/register", json=payload)
+        resp = client.post("/api/v1/auth/register", json={
+            "student_id": self.STUDENT_ID,
+            "password": "12345",
+        })
         assert resp.status_code == 422
 
     def test_rejects_non_ten_digit_student_id(self, client):
-        payload = {"student_id": "student", "password": "1234"}
-        resp = client.post("/api/v1/auth/register", json=payload)
+        resp = client.post("/api/v1/auth/register", json={
+            "student_id": "student",
+            "password": "1234",
+        })
         assert resp.status_code == 422
 
 
@@ -147,8 +66,14 @@ class TestLogin:
         })
         assert resp.status_code == 200
         data = resp.json()
-        assert "access_token" in data
-        assert data["token_type"] == "bearer"
+        assert "access_token" not in data
+        assert "refresh_token" not in data
+        assert data["token_type"] == "cookie"
+        assert client.cookies.get("dreamlounge_access")
+        assert client.cookies.get("dreamlounge_refresh")
+        set_cookie = ",".join(resp.headers.get_list("set-cookie")).lower()
+        assert "httponly" in set_cookie
+        assert "samesite=lax" in set_cookie
 
     def test_wrong_password(self, client, db):
         self._register(client, db)
@@ -172,7 +97,8 @@ class TestLogin:
             "student_id": self.STUDENT_ID,
             "password": self.PASSWORD,
         })
-        token = login_resp.json()["access_token"]
+        token = client.cookies.get("dreamlounge_access")
+        assert token
 
         resp = client.get("/api/v1/me/applications/drafts", headers={"Authorization": f"Bearer {token}"})
         assert resp.status_code == 200
@@ -202,9 +128,10 @@ class TestRefreshSession:
         )
 
         assert resp.status_code == 200
-        assert resp.json()["access_token"]
-        assert resp.json()["refresh_token"]
-        assert resp.json()["refresh_token"] != old_refresh_token
+        assert resp.json()["token_type"] == "cookie"
+        assert "access_token" not in resp.json()
+        assert "refresh_token" not in resp.json()
+        assert client.cookies.get("dreamlounge_refresh") != old_refresh_token
 
         reused = client.post(
             "/api/v1/auth/refresh",

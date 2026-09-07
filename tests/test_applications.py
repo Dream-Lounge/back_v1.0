@@ -68,12 +68,14 @@ class TestCreateApplication:
 
     def test_cannot_submit_twice(self, client, app_setup):
         payload = {
+            **APPLICANT,
             "form_id": app_setup["form_id"],
             "is_draft": False,
             "answers": [{"question_id": app_setup["question_id"], "answer_text": "답변"}],
         }
-        client.post("/api/v1/applications", headers=app_setup["headers"], json=payload)
+        first = client.post("/api/v1/applications", headers=app_setup["headers"], json=payload)
         resp = client.post("/api/v1/applications", headers=app_setup["headers"], json=payload)
+        assert first.status_code == 201
         assert resp.status_code == 400
 
     def test_submit_missing_required_answer(self, client, app_setup):
@@ -124,6 +126,7 @@ class TestCreateApplication:
         assert resp.status_code == 201
 
     def test_create_requires_auth(self, client, app_setup):
+        client.cookies.clear()
         resp = client.post("/api/v1/applications", json={
             "form_id": app_setup["form_id"],
             "is_draft": True,
@@ -220,7 +223,7 @@ class TestUpdateApplication:
         """다른 유저의 신청서는 수정 불가."""
         app_id = self._create_draft(client, app_setup)
 
-        other_token = register_and_login(client, db, "2021999999", "other@cju.ac.kr")
+        other_token = register_and_login(client, db, "2021999999")
         other_headers = {"Authorization": f"Bearer {other_token}"}
 
         resp = client.patch(f"/api/v1/applications/{app_id}", headers=other_headers, json={
@@ -380,6 +383,29 @@ class TestSubmittedApplications:
         assert data["id"] == created["id"]
         assert data["is_draft"] is False
         assert data["status"] == "submitted"
+
+    def test_submitted_detail_keeps_original_question_after_form_edit(
+        self, client, app_setup, president_headers
+    ):
+        created = client.post("/api/v1/applications", headers=app_setup["headers"], json={
+            **APPLICANT,
+            "form_id": app_setup["form_id"],
+            "is_draft": False,
+            "answers": [{"question_id": app_setup["question_id"], "answer_text": "기존 답변"}],
+        }).json()
+        changed = client.patch(
+            f"/api/v1/clubs/{app_setup['club_id']}/form/questions/{app_setup['question_id']}",
+            headers=president_headers,
+            json={"question_text": "변경된 질문"},
+        )
+        assert changed.status_code == 200
+
+        detail = client.get(
+            f"/api/v1/me/applications/submitted/{created['id']}",
+            headers=app_setup["headers"],
+        ).json()
+        assert detail["answers"][0]["question_text"] != "변경된 질문"
+        assert detail["answers"][0]["question_text"] == detail["form_snapshot"]["questions"][0]["question_text"]
 
     def test_submitted_detail_not_found_for_draft(self, client, app_setup):
         created = client.post("/api/v1/applications", headers=app_setup["headers"], json={

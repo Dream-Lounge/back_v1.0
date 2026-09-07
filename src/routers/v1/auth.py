@@ -1,17 +1,15 @@
 import logging
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.security import HTTPAuthorizationCredentials
 from supabase_auth.errors import AuthApiError
 from sqlalchemy.exc import OperationalError as DBOperationalError
 from sqlalchemy.orm import Session
 
 from src.core.security import create_access_token
+from src.core.config import settings
 from src.core.dependencies import get_current_user
 from src.db.session import get_db
 from src.schemas.user import (
-    EmailVerifySendRequest,
-    EmailVerifyConfirmRequest,
-    EmailVerifyConfirmResponse,
     UserCreate,
     LoginRequest,
     LogoutRequest,
@@ -27,65 +25,44 @@ from src.core.dependencies import bearer
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/auth", tags=["auth"])
 
-
-@router.post("/email-verify/send", status_code=status.HTTP_200_OK)
-def send_email_verification(
-    body: EmailVerifySendRequest, request: Request, db: Session = Depends(get_db)
-):
-    """청주대 이메일로 6자리 인증번호 발송."""
-    try:
-        auth_service.send_verification_code(
-            db, str(body.email), get_rate_limit_client_ip(request)
-        )
-    except auth_service.RateLimitExceeded as e:
-        raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail=str(e))
-    except ValueError as e:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
-    except DBOperationalError as e:
-        logger.error(f"DB 연결 오류: {e}", exc_info=True)
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="데이터베이스 연결에 실패했습니다. 서버 설정을 확인해주세요.",
-        )
-    except Exception as e:
-        logger.error(f"이메일 발송 중 오류 발생: {e}", exc_info=True)
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="이메일 발송에 실패했습니다. 잠시 후 다시 시도해주세요.",
-        )
-    return {"message": "인증번호가 발송되었습니다."}
+ACCESS_COOKIE = "dreamlounge_access"
+REFRESH_COOKIE = "dreamlounge_refresh"
 
 
-@router.post(
-    "/email-verify/confirm",
-    response_model=EmailVerifyConfirmResponse,
-    status_code=status.HTTP_200_OK,
-)
-def confirm_email_verification(body: EmailVerifyConfirmRequest, db: Session = Depends(get_db)):
-    """인증번호 검증."""
-    try:
-        token = auth_service.confirm_verification_code(db, str(body.email), body.code)
-    except ValueError as e:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
-    except DBOperationalError as e:
-        logger.error(f"DB 연결 오류: {e}", exc_info=True)
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="데이터베이스 연결에 실패했습니다. 서버 설정을 확인해주세요.",
-        )
-    return EmailVerifyConfirmResponse(
-        message="이메일 인증이 완료되었습니다.",
-        verification_token=token,
+def _set_session_cookies(response: Response, access_token: str, refresh_token: str) -> None:
+    secure = settings.ENVIRONMENT.lower() == "production"
+    same_site = "none" if secure else "lax"
+    response.set_cookie(
+        ACCESS_COOKIE,
+        access_token,
+        max_age=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+        httponly=True,
+        secure=secure,
+        samesite=same_site,
+        path="/api/v1",
     )
+    response.set_cookie(
+        REFRESH_COOKIE,
+        refresh_token,
+        max_age=settings.REFRESH_TOKEN_EXPIRE_DAYS * 24 * 60 * 60,
+        httponly=True,
+        secure=secure,
+        samesite=same_site,
+        path="/api/v1/auth",
+    )
+
+
+def _clear_session_cookies(response: Response) -> None:
+    response.delete_cookie(ACCESS_COOKIE, path="/api/v1")
+    response.delete_cookie(REFRESH_COOKIE, path="/api/v1/auth")
 
 
 @router.post("/register", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
 def register(body: UserCreate, request: Request, db: Session = Depends(get_db)):
-    """가두모집용 간편 회원가입 (학번 + 숫자 4자리 PIN)."""
+    """학번 + 숫자 4자리 PIN으로 회원가입."""
     try:
         auth_service.enforce_registration_rate_limit(
             db,
-            body.student_id,
             body.student_id,
             get_rate_limit_client_ip(request),
         )
@@ -110,7 +87,7 @@ def register(body: UserCreate, request: Request, db: Session = Depends(get_db)):
 
 
 @router.post("/login", response_model=TokenResponse)
-def login(body: LoginRequest, request: Request, db: Session = Depends(get_db)):
+def login(body: LoginRequest, request: Request, response: Response, db: Session = Depends(get_db)):
     """학번 + 비밀번호 로그인 → JWT + 사용자 정보 반환."""
     client_ip = get_rate_limit_client_ip(request)
     try:
@@ -146,36 +123,44 @@ def login(body: LoginRequest, request: Request, db: Session = Depends(get_db)):
 
     auth_service.clear_login_failures(db, body.student_id)
     if session:
+        _set_session_cookies(response, session.access_token, session.refresh_token)
         return TokenResponse(
-            access_token=session.access_token,
-            refresh_token=session.refresh_token,
             user=UserInfo.model_validate(user),
         )
     token = create_access_token({"sub": user.id})
     refresh_token = auth_service.create_local_session(db, user)
+    _set_session_cookies(response, token, refresh_token)
     return TokenResponse(
-        access_token=token,
-        refresh_token=refresh_token,
         user=UserInfo.model_validate(user),
     )
 
 
 @router.post("/refresh", response_model=TokenResponse)
-def refresh_session(body: RefreshTokenRequest, db: Session = Depends(get_db)):
+def refresh_session(
+    request: Request,
+    response: Response,
+    body: RefreshTokenRequest | None = None,
+    db: Session = Depends(get_db),
+):
     """Supabase 또는 기존 자체 refresh token으로 세션을 재발급한다."""
     try:
+        supplied_refresh_token = (
+            (body.refresh_token if body else None)
+            or request.cookies.get(REFRESH_COOKIE)
+        )
+        if not supplied_refresh_token:
+            raise ValueError("갱신 토큰이 없습니다.")
         try:
-            refresh_token, user = auth_service.rotate_local_session(db, body.refresh_token)
+            refresh_token, user = auth_service.rotate_local_session(db, supplied_refresh_token)
+            access_token = create_access_token({"sub": user.id})
+            _set_session_cookies(response, access_token, refresh_token)
             return TokenResponse(
-                access_token=create_access_token({"sub": user.id}),
-                refresh_token=refresh_token,
                 user=UserInfo.model_validate(user),
             )
         except ValueError:
-            session, user = auth_service.refresh_supabase_session(db, body.refresh_token)
+            session, user = auth_service.refresh_supabase_session(db, supplied_refresh_token)
+            _set_session_cookies(response, session.access_token, session.refresh_token)
             return TokenResponse(
-                access_token=session.access_token,
-                refresh_token=session.refresh_token,
                 user=UserInfo.model_validate(user),
             )
     except (ValueError, AuthApiError) as e:
@@ -188,7 +173,9 @@ def refresh_session(body: RefreshTokenRequest, db: Session = Depends(get_db)):
         )
 @router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)
 def logout(
-    credentials: HTTPAuthorizationCredentials = Depends(bearer),
+    response: Response,
+    request: Request,
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer),
     current_user=Depends(get_current_user),
     db: Session = Depends(get_db),
     body: LogoutRequest | None = None,
@@ -196,15 +183,27 @@ def logout(
     """현재 브라우저의 Supabase 또는 자체 JWT 갱신 세션을 폐기한다."""
     try:
         if current_user.auth_user_id:
-            auth_service.revoke_supabase_session(credentials.credentials)
-        elif body and body.refresh_token:
-            auth_service.revoke_local_session(db, current_user.id, body.refresh_token)
+            access_token = (
+                credentials.credentials
+                if credentials is not None
+                else request.cookies.get(ACCESS_COOKIE)
+            )
+            if access_token:
+                auth_service.revoke_supabase_session(access_token)
+        else:
+            refresh_token = request.cookies.get(REFRESH_COOKIE) or (
+                body.refresh_token if body else None
+            )
+            if refresh_token:
+                auth_service.revoke_local_session(db, current_user.id, refresh_token)
     except Exception as exc:
         logger.warning("Supabase 세션 폐기 실패: %s", exc)
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="로그아웃 처리에 실패했습니다. 잠시 후 다시 시도해주세요.",
         )
+    finally:
+        _clear_session_cookies(response)
 
 
 @router.get("/me", response_model=UserInfo)
