@@ -1,5 +1,9 @@
 from unittest.mock import MagicMock, patch
+from fastapi import Response
 from fastapi.testclient import TestClient
+
+from src.core.config import settings
+from src.routers.v1.auth import _clear_session_cookies, _set_session_cookies
 
 
 # ── 헬스체크 ──────────────────────────────────────────────────────────────────
@@ -7,6 +11,26 @@ from fastapi.testclient import TestClient
 def test_health(client: TestClient):
     response = client.get("/health")
     assert response.status_code == 200
+
+
+def test_session_cookie_paths_include_public_route_prefix():
+    response = Response()
+    with patch.object(settings, "COOKIE_PATH_PREFIX", "/back-v1-0"):
+        _set_session_cookies(response, "access", "refresh")
+
+    cookies = response.headers.getlist("set-cookie")
+    assert any("Path=/back-v1-0/api/v1;" in cookie for cookie in cookies)
+    assert any("Path=/back-v1-0/api/v1/auth;" in cookie for cookie in cookies)
+
+
+def test_session_cookie_deletion_uses_public_route_prefix():
+    response = Response()
+    with patch.object(settings, "COOKIE_PATH_PREFIX", "/back-v1-0"):
+        _clear_session_cookies(response)
+
+    cookies = response.headers.getlist("set-cookie")
+    assert any("Path=/back-v1-0/api/v1;" in cookie for cookie in cookies)
+    assert any("Path=/back-v1-0/api/v1/auth;" in cookie for cookie in cookies)
 
 
 # ── 회원가입 ───────────────────────────────────────────────────────────────────

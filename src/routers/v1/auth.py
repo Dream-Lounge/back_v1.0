@@ -29,6 +29,11 @@ ACCESS_COOKIE = "dreamlounge_access"
 REFRESH_COOKIE = "dreamlounge_refresh"
 
 
+def _cookie_path(api_path: str) -> str:
+    """브라우저에 보이는 외부 경로 접두사를 쿠키 Path에 반영한다."""
+    return f"{settings.COOKIE_PATH_PREFIX}{api_path}"
+
+
 def _set_session_cookies(response: Response, access_token: str, refresh_token: str) -> None:
     secure = settings.ENVIRONMENT.lower() == "production"
     same_site = "none" if secure else "lax"
@@ -39,7 +44,7 @@ def _set_session_cookies(response: Response, access_token: str, refresh_token: s
         httponly=True,
         secure=secure,
         samesite=same_site,
-        path="/api/v1",
+        path=_cookie_path("/api/v1"),
     )
     response.set_cookie(
         REFRESH_COOKIE,
@@ -48,13 +53,13 @@ def _set_session_cookies(response: Response, access_token: str, refresh_token: s
         httponly=True,
         secure=secure,
         samesite=same_site,
-        path="/api/v1/auth",
+        path=_cookie_path("/api/v1/auth"),
     )
 
 
 def _clear_session_cookies(response: Response) -> None:
-    response.delete_cookie(ACCESS_COOKIE, path="/api/v1")
-    response.delete_cookie(REFRESH_COOKIE, path="/api/v1/auth")
+    response.delete_cookie(ACCESS_COOKIE, path=_cookie_path("/api/v1"))
+    response.delete_cookie(REFRESH_COOKIE, path=_cookie_path("/api/v1/auth"))
 
 
 @router.post("/register", response_model=UserResponse, status_code=status.HTTP_201_CREATED)

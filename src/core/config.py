@@ -32,6 +32,9 @@ class Settings(BaseSettings):
 
     FRONTEND_URL: str = "http://localhost:5173"
     ALLOWED_ORIGINS: str = '["http://localhost:5173", "http://localhost:3000"]'
+    # DigitalOcean처럼 외부 공개 URL에 경로 접두사가 붙는 경우 사용한다.
+    # 예: 공개 API가 /back-v1-0/api/v1이면 /back-v1-0
+    COOKIE_PATH_PREFIX: str = ""
 
     LOGIN_MAX_ATTEMPTS: int = 5
     LOGIN_LOCK_MINUTES: int = 15
@@ -64,6 +67,18 @@ class Settings(BaseSettings):
 
     def get_trusted_proxy_cidrs(self) -> List[str]:
         return json.loads(self.TRUSTED_PROXY_CIDRS)
+
+    @field_validator("COOKIE_PATH_PREFIX", mode="before")
+    @classmethod
+    def normalize_cookie_path_prefix(cls, value):
+        prefix = str(value or "").strip()
+        if prefix in {"", "/"}:
+            return ""
+        if not prefix.startswith("/") or any(char in prefix for char in ("?", "#")):
+            raise ValueError("COOKIE_PATH_PREFIX는 /로 시작하는 URL 경로여야 합니다.")
+        if any(part == ".." for part in prefix.split("/")):
+            raise ValueError("COOKIE_PATH_PREFIX에 상위 경로(..)를 사용할 수 없습니다.")
+        return prefix.rstrip("/")
 
     @model_validator(mode="after")
     def validate_production_security(self):
