@@ -10,7 +10,7 @@ from src.schemas.club import (
 )
 from src.services import club_service
 from src.services import auth_service
-from src.utils.storage import upload_club_image
+from src.utils.storage import upload_club_image, upload_pending_club_image
 from src.utils.client_ip import get_rate_limit_client_ip
 
 router = APIRouter(prefix="/clubs", tags=["clubs"])
@@ -20,6 +20,31 @@ PUBLIC_CLUB_CACHE_CONTROL = "public, max-age=30, s-maxage=60, stale-while-revali
 
 class ImageUploadResponse(BaseModel):
     image_url: str
+
+
+@router.post("/images", response_model=ImageUploadResponse)
+async def upload_image_before_club_creation(
+    request: Request,
+    file: UploadFile = File(...),
+    current_user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """동아리 생성 전 이미지 업로드 (모든 로그인 사용자)."""
+    try:
+        auth_service.enforce_image_upload_rate_limit(
+            db, current_user.id, get_rate_limit_client_ip(request)
+        )
+        url = await upload_pending_club_image(file, current_user.id)
+    except auth_service.RateLimitExceeded as e:
+        raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    except Exception:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="이미지 업로드에 실패했습니다. 잠시 후 다시 시도해주세요.",
+        )
+    return ImageUploadResponse(image_url=url)
 
 
 @router.post("/{club_id}/images", response_model=ImageUploadResponse)

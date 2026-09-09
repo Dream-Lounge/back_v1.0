@@ -24,8 +24,8 @@ def _detect_image_type(contents: bytes) -> tuple[str, str] | None:
     return None
 
 
-async def upload_club_image(file: UploadFile, club_id: str) -> str:
-    """이미지 파일을 Supabase Storage에 업로드하고 퍼블릭 URL을 반환한다."""
+async def _upload_image(file: UploadFile, path_prefix: str) -> str:
+    """검증한 이미지를 지정된 서버 관리 경로에 업로드한다."""
     if file.content_type not in ALLOWED_CONTENT_TYPES:
         raise ValueError("지원하지 않는 파일 형식입니다. jpg, png, webp, gif만 허용됩니다.")
 
@@ -38,7 +38,7 @@ async def upload_club_image(file: UploadFile, club_id: str) -> str:
     if not detected or detected[0] != file.content_type:
         raise ValueError("파일 내용과 이미지 형식이 일치하지 않습니다.")
     detected_content_type, ext = detected
-    path = f"clubs/{club_id}/{uuid.uuid4()}.{ext}"
+    path = f"{path_prefix}/{uuid.uuid4()}.{ext}"
 
     client = get_supabase_admin_client()
     try:
@@ -62,3 +62,13 @@ async def upload_club_image(file: UploadFile, club_id: str) -> str:
         raise
 
     return client.storage.from_(settings.SUPABASE_STORAGE_BUCKET).get_public_url(path)
+
+
+async def upload_club_image(file: UploadFile, club_id: str) -> str:
+    """기존 동아리의 이미지를 해당 동아리 경로에 업로드한다."""
+    return await _upload_image(file, f"clubs/{club_id}")
+
+
+async def upload_pending_club_image(file: UploadFile, user_id: str) -> str:
+    """동아리 생성 전 이미지를 로그인 사용자의 임시 경로에 업로드한다."""
+    return await _upload_image(file, f"clubs/pending/{user_id}")
