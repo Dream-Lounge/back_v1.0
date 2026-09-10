@@ -41,7 +41,7 @@ class TestRegister:
     def test_success(self, client, db):
         resp = client.post("/api/v1/auth/register", json={
             "student_id": self.STUDENT_ID,
-            "password": "1234",
+            "password": "test1234!",
         })
         assert resp.status_code == 201
         data = resp.json()
@@ -50,22 +50,36 @@ class TestRegister:
         assert "email_verified" not in data
 
     def test_duplicate_student_id(self, client):
-        payload = {"student_id": self.STUDENT_ID, "password": "1234"}
+        payload = {"student_id": self.STUDENT_ID, "password": "test1234!"}
         client.post("/api/v1/auth/register", json=payload)
         resp = client.post("/api/v1/auth/register", json=payload)
         assert resp.status_code == 400
 
-    def test_rejects_non_four_digit_pin(self, client):
+    def test_rejects_password_shorter_than_eight_characters(self, client):
         resp = client.post("/api/v1/auth/register", json={
             "student_id": self.STUDENT_ID,
-            "password": "12345",
+            "password": "abc!123",
         })
         assert resp.status_code == 422
+
+    def test_rejects_password_without_special_character(self, client):
+        resp = client.post("/api/v1/auth/register", json={
+            "student_id": self.STUDENT_ID,
+            "password": "password123",
+        })
+        assert resp.status_code == 422
+
+    def test_accepts_lowercase_password_without_uppercase(self, client):
+        resp = client.post("/api/v1/auth/register", json={
+            "student_id": self.STUDENT_ID,
+            "password": "password!",
+        })
+        assert resp.status_code == 201
 
     def test_rejects_non_ten_digit_student_id(self, client):
         resp = client.post("/api/v1/auth/register", json={
             "student_id": "student",
-            "password": "1234",
+            "password": "test1234!",
         })
         assert resp.status_code == 422
 
@@ -74,7 +88,7 @@ class TestRegister:
 
 class TestLogin:
     STUDENT_ID = "2021222222"
-    PASSWORD = "1234"
+    PASSWORD = "test1234!"
 
     def _register(self, client, db):
         client.post("/api/v1/auth/register", json={
@@ -272,7 +286,7 @@ class TestAccountWithdrawal:
 
         register_resp = client.post("/api/v1/auth/register", json={
             "student_id": "2021000001",
-            "password": "5678",
+            "password": "newpass8!",
         })
 
         assert register_resp.status_code == 201

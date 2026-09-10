@@ -82,6 +82,41 @@ class TestClubUpdate:
         })
         assert resp.status_code == 403
 
+    def test_president_cannot_update_another_club(self, client, db, setup):
+        other_token = register_and_login(client, db, "2021999998")
+        other_headers = {"Authorization": f"Bearer {other_token}"}
+        own_club = client.post(
+            "/api/v1/clubs",
+            headers=other_headers,
+            json={"name": "다른관리자동아리"},
+        )
+        assert own_club.status_code == 201
+
+        resp = client.patch(
+            f"/api/v1/clubs/{setup['club_id']}",
+            headers=other_headers,
+            json={"description": "다른 동아리 수정 시도"},
+        )
+        assert resp.status_code == 403
+
+    def test_update_accepts_long_contact_url(self, client, setup):
+        long_url = "https://www.google.com/search?q=" + ("dreamlounge%20" * 40)
+        assert len(long_url) > 255
+
+        resp = client.patch(
+            f"/api/v1/clubs/{setup['club_id']}",
+            headers=setup["president_headers"],
+            json={
+                "contact_links": [
+                    {"type": "url", "label": "오픈채팅", "value": long_url}
+                ]
+            },
+        )
+
+        assert resp.status_code == 200
+        assert resp.json()["contact_links"][0]["value"] == long_url
+        assert resp.json()["open_chat_url"] == long_url
+
 
 # ── 신청 폼 관리 ──────────────────────────────────────────────────────────────
 
@@ -198,6 +233,7 @@ class TestApplicationReview:
         resp = client.post("/api/v1/applications", headers=setup["user_headers"], json={
             "form_id": setup["form_id"],
             "is_draft": False,
+            "privacy_consent": True,
             "applicant_student_id": "2021000001",
             "applicant_name": "테스트유저",
             "applicant_department": "컴퓨터공학과",
@@ -218,6 +254,34 @@ class TestApplicationReview:
         assert len(data["items"]) == 1
         assert data["items"][0]["user_department"] == "컴퓨터공학과"
 
+    def test_list_applications_filters_status(self, client, setup, submitted_app):
+        submitted = client.get(
+            f"/api/v1/clubs/{setup['club_id']}/applications?status=submitted",
+            headers=setup["president_headers"],
+        )
+        assert submitted.status_code == 200
+        assert submitted.json()["total"] == 1
+
+        reviewed = client.patch(
+            f"/api/v1/clubs/{setup['club_id']}/applications/{submitted_app['id']}/status",
+            headers=setup["president_headers"],
+            json={"status": "passed"},
+        )
+        assert reviewed.status_code == 200
+
+        passed = client.get(
+            f"/api/v1/clubs/{setup['club_id']}/applications?status=passed",
+            headers=setup["president_headers"],
+        )
+        failed = client.get(
+            f"/api/v1/clubs/{setup['club_id']}/applications?status=failed",
+            headers=setup["president_headers"],
+        )
+        assert passed.status_code == 200
+        assert passed.json()["total"] == 1
+        assert failed.status_code == 200
+        assert failed.json()["total"] == 0
+
     def test_get_application_detail(self, client, setup, submitted_app):
         resp = client.get(
             f"/api/v1/clubs/{setup['club_id']}/applications/{submitted_app['id']}",
@@ -228,6 +292,44 @@ class TestApplicationReview:
         assert data["id"] == submitted_app["id"]
         assert data["user_department"] == "컴퓨터공학과"
         assert len(data["answers"]) == 1
+        assert data["answers"][0]["question_text"] == "지원 동기를 작성해주세요."
+        assert data["answers"][0]["order_index"] == 0
+
+    def test_export_applications_returns_questions_and_answers_in_batch(
+        self, client, setup, submitted_app
+    ):
+        resp = client.get(
+            f"/api/v1/clubs/{setup['club_id']}/applications/export?size=200",
+            headers=setup["president_headers"],
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["total"] == 1
+        assert len(data["items"]) == 1
+        answer = data["items"][0]["answers"][0]
+        assert answer["question_text"] == "지원 동기를 작성해주세요."
+        assert answer["answer_text"] == "지원합니다."
+
+    def test_export_applications_applies_status_filter(
+        self, client, setup, submitted_app
+    ):
+        client.patch(
+            f"/api/v1/clubs/{setup['club_id']}/applications/{submitted_app['id']}/status",
+            headers=setup["president_headers"],
+            json={"status": "passed"},
+        )
+        passed = client.get(
+            f"/api/v1/clubs/{setup['club_id']}/applications/export?status=passed",
+            headers=setup["president_headers"],
+        )
+        failed = client.get(
+            f"/api/v1/clubs/{setup['club_id']}/applications/export?status=failed",
+            headers=setup["president_headers"],
+        )
+        assert passed.status_code == 200
+        assert passed.json()["total"] == 1
+        assert failed.status_code == 200
+        assert failed.json()["total"] == 0
 
     def test_review_pending(self, client, setup, submitted_app):
         resp = client.patch(
@@ -590,6 +692,7 @@ class TestNotifications:
             "applicant_grade": "2",
             "form_id": setup["form_id"],
             "is_draft": False,
+            "privacy_consent": True,
             "answers": [{"question_id": setup["question_id"], "answer_text": "지원합니다."}],
         })
         client.patch(

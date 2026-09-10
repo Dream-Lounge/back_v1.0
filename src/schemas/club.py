@@ -21,7 +21,7 @@ class ClubTagResponse(BaseModel):
 class ClubContactLink(BaseModel):
     type: Literal["email", "phone", "url"]
     label: str = Field(..., min_length=1, max_length=50)
-    value: str = Field(..., min_length=1, max_length=255)
+    value: str = Field(..., min_length=1, max_length=2048)
 
     @model_validator(mode="after")
     def validate_value_for_type(self):

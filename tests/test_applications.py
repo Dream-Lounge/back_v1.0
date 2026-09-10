@@ -3,6 +3,7 @@ from tests.conftest import register_and_login
 
 
 APPLICANT = {
+    "privacy_consent": True,
     "applicant_student_id": "2021000001",
     "applicant_name": "테스트유저",
     "applicant_department": "컴퓨터공학과",
@@ -81,11 +82,24 @@ class TestCreateApplication:
     def test_submit_missing_required_answer(self, client, app_setup):
         """필수 질문 미답변 상태로 제출 시 400."""
         resp = client.post("/api/v1/applications", headers=app_setup["headers"], json={
+            **APPLICANT,
             "form_id": app_setup["form_id"],
             "is_draft": False,
             "answers": [],
         })
         assert resp.status_code == 400
+
+    def test_submit_requires_privacy_consent(self, client, app_setup):
+        payload = {
+            **APPLICANT,
+            "privacy_consent": False,
+            "form_id": app_setup["form_id"],
+            "is_draft": False,
+            "answers": [{"question_id": app_setup["question_id"], "answer_text": "답변"}],
+        }
+        resp = client.post("/api/v1/applications", headers=app_setup["headers"], json=payload)
+        assert resp.status_code == 400
+        assert resp.json()["detail"] == "개인정보 수집 및 이용에 동의해주세요."
 
     def test_submit_ignores_inactive_required_question(self, client, db, app_setup):
         """관리자가 삭제한 필수 문항은 최종 제출 검증에서 제외."""
@@ -301,6 +315,7 @@ class TestDraftApplications:
     def test_submitted_not_in_draft_list(self, client, app_setup):
         """제출된 신청서는 임시저장함에 나타나지 않아야 한다."""
         client.post("/api/v1/applications", headers=app_setup["headers"], json={
+            **APPLICANT,
             "form_id": app_setup["form_id"],
             "is_draft": False,
             "answers": [{"question_id": app_setup["question_id"], "answer_text": "답변"}],

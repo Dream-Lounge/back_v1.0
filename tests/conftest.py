@@ -63,7 +63,7 @@ def client(db):
 
 # ── 공통 헬퍼 ─────────────────────────────────────────────────────────────────
 
-def register_and_login(client, db, student_id: str, password: str = "1234") -> str:
+def register_and_login(client, db, student_id: str, password: str = "test1234!") -> str:
     """간편 회원가입 후 로그인하고 access_token을 반환한다."""
     register = client.post(
         "/api/v1/auth/register",

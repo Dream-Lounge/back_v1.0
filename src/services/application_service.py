@@ -56,18 +56,32 @@ def _to_detail_dict(app: Application) -> dict:
         for item in (snapshot or {}).get("questions", [])
         if isinstance(item, dict) and isinstance(item.get("id"), str)
     }
-    d["answers"] = [
-        {
-            "question_id": a.question_id,
-            "answer_text": a.answer_text,
-            "question_text": snapshot_questions.get(a.question_id, {}).get("question_text"),
-            "question_type": snapshot_questions.get(a.question_id, {}).get("question_type"),
-            "is_required": snapshot_questions.get(a.question_id, {}).get("is_required"),
-            "order_index": snapshot_questions.get(a.question_id, {}).get("order_index"),
-            "options": snapshot_questions.get(a.question_id, {}).get("options"),
-        }
-        for a in app.answers
-    ]
+    enriched_answers = []
+    for answer in app.answers:
+        snapshot_question = snapshot_questions.get(answer.question_id, {})
+        current_question = getattr(answer, "question", None)
+        enriched_answers.append({
+            "question_id": answer.question_id,
+            "answer_text": answer.answer_text,
+            "question_text": snapshot_question.get("question_text")
+            or getattr(current_question, "question_text", None),
+            "question_type": snapshot_question.get("question_type")
+            or getattr(current_question, "question_type", None),
+            "is_required": snapshot_question.get("is_required")
+            if "is_required" in snapshot_question
+            else getattr(current_question, "is_required", None),
+            "order_index": snapshot_question.get("order_index")
+            if "order_index" in snapshot_question
+            else getattr(current_question, "order_index", None),
+            "options": snapshot_question.get("options")
+            if "options" in snapshot_question
+            else getattr(current_question, "options", None),
+        })
+    enriched_answers.sort(key=lambda item: (
+        item["order_index"] if item["order_index"] is not None else 10_000,
+        item["question_id"],
+    ))
+    d["answers"] = enriched_answers
     d["form_snapshot"] = snapshot
     d.update({
         "applicant_student_id": app.applicant_student_id,
@@ -191,6 +205,9 @@ def create_application(db: Session, user: User, data: ApplicationCreate) -> dict
     if existing_draft:
         raise ValueError("이미 임시저장한 신청서가 있습니다.")
 
+    if not data.is_draft and not data.privacy_consent:
+        raise ValueError("개인정보 수집 및 이용에 동의해주세요.")
+
     _validate_answers(form.questions, data.answers, require_complete=not data.is_draft)
     applicant_snapshot = _applicant_snapshot(user, data)
 
@@ -250,6 +267,8 @@ def update_application(
         raise ValueError("이미 제출된 신청서는 수정할 수 없습니다.")
 
     submitting = data.is_draft is False
+    if submitting and not data.privacy_consent:
+        raise ValueError("개인정보 수집 및 이용에 동의해주세요.")
     _validate_applicant_info(user, data)
     snapshot_updates = {
         "applicant_name": data.applicant_name,
@@ -405,14 +424,12 @@ def get_active_clubs(db: Session, user: User) -> list[dict]:
 
 # ── 관리자: 신청서 심사 ────────────────────────────────────────────────────────
 
-def get_club_applications(
+def _club_applications_query(
     db: Session,
     club_id: str,
-    page: int = 1,
-    size: int = 20,
     search: str | None = None,
-) -> dict:
-    """동아리에 제출된 신청서 목록 (is_draft=False)."""
+    status_filter: str | None = None,
+):
     query = (
         db.query(Application)
         .join(ApplicationForm, Application.form_id == ApplicationForm.id)
@@ -425,6 +442,39 @@ def get_club_applications(
             Application.applicant_student_id.ilike(pattern),
             Application.applicant_department.ilike(pattern),
         ))
+    if status_filter:
+        query = query.filter(Application.status == status_filter)
+    return query
+
+
+def _to_admin_detail_dict(app: Application) -> dict:
+    detail = _to_detail_dict(app)
+    return {
+        "id": app.id,
+        "user_id": app.user_id,
+        "user_name": app.applicant_name,
+        "user_student_id": app.applicant_student_id,
+        "user_department": app.applicant_department,
+        "status": app.status,
+        "submitted_at": app.submitted_at,
+        "admin_comment": app.admin_comment,
+        "applicant_department": app.applicant_department,
+        "applicant_phone": app.applicant_phone,
+        "applicant_grade": app.applicant_grade,
+        "answers": detail["answers"],
+        "form_snapshot": detail["form_snapshot"],
+    }
+
+def get_club_applications(
+    db: Session,
+    club_id: str,
+    page: int = 1,
+    size: int = 20,
+    search: str | None = None,
+    status_filter: str | None = None,
+) -> dict:
+    """동아리에 제출된 신청서 목록 (is_draft=False)."""
+    query = _club_applications_query(db, club_id, search, status_filter)
     total = query.count()
     apps = (
         query.order_by(Application.submitted_at.desc(), Application.id.desc())
@@ -457,11 +507,44 @@ def get_club_applications(
     }
 
 
+def get_club_applications_export(
+    db: Session,
+    club_id: str,
+    page: int = 1,
+    size: int = 100,
+    search: str | None = None,
+    status_filter: str | None = None,
+) -> dict:
+    """엑셀 생성용 신청자·답변·제출 당시 질문지를 페이지 단위 일괄 조회."""
+    query = _club_applications_query(db, club_id, search, status_filter)
+    total = query.count()
+    applications = (
+        query.options(
+            selectinload(Application.answers).selectinload(ApplicationAnswer.question),
+            selectinload(Application.form).selectinload(ApplicationForm.club),
+        )
+        .order_by(Application.submitted_at.desc(), Application.id.desc())
+        .offset((page - 1) * size)
+        .limit(size)
+        .all()
+    )
+    return {
+        "items": [_to_admin_detail_dict(app) for app in applications],
+        "total": total,
+        "page": page,
+        "size": size,
+        "pages": (total + size - 1) // size,
+    }
+
+
 def get_club_application(db: Session, club_id: str, application_id: str) -> dict | None:
     """동아리 신청서 상세 (관리자용)."""
     app = (
         db.query(Application)
-        .options(selectinload(Application.answers), selectinload(Application.user))
+        .options(
+            selectinload(Application.answers).selectinload(ApplicationAnswer.question),
+            selectinload(Application.form).selectinload(ApplicationForm.club),
+        )
         .join(ApplicationForm, Application.form_id == ApplicationForm.id)
         .filter(
             ApplicationForm.club_id == club_id,
@@ -472,20 +555,7 @@ def get_club_application(db: Session, club_id: str, application_id: str) -> dict
     )
     if not app:
         return None
-    return {
-        "id": app.id,
-        "user_id": app.user_id,
-        "user_name": app.applicant_name,
-        "user_student_id": app.applicant_student_id,
-        "user_department": app.applicant_department,
-        "status": app.status,
-        "submitted_at": app.submitted_at,
-        "admin_comment": app.admin_comment,
-        "applicant_department": app.applicant_department,
-        "applicant_phone": app.applicant_phone,
-        "applicant_grade": app.applicant_grade,
-        "answers": app.answers,
-    }
+    return _to_admin_detail_dict(app)
 
 
 def update_application_status(db: Session, club_id: str, application_id: str, new_status: str) -> Application:

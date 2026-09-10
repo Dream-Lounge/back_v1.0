@@ -19,6 +19,7 @@ class ApplicationCommentUpdate(BaseModel):
 class ApplicationCreate(BaseModel):
     form_id: str
     is_draft: bool = True
+    privacy_consent: bool = False
     answers: List[ApplicationAnswerCreate] = Field(default_factory=list, max_length=100)
     applicant_student_id: Optional[str] = Field(None, max_length=20)
     applicant_name: Optional[str] = Field(None, max_length=50)
@@ -29,6 +30,7 @@ class ApplicationCreate(BaseModel):
 
 class ApplicationUpdate(BaseModel):
     is_draft: Optional[bool] = None
+    privacy_consent: bool = False
     answers: Optional[List[ApplicationAnswerCreate]] = None
     applicant_student_id: Optional[str] = Field(None, max_length=20)
     applicant_name: Optional[str] = Field(None, max_length=50)

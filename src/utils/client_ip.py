@@ -18,7 +18,11 @@ def get_rate_limit_client_ip(request: Request) -> str | None:
         for cidr in settings.get_trusted_proxy_cidrs()
     )
     if settings.TRUST_PROXY_HEADERS and trusted_peer:
-        candidate = request.headers.get("x-forwarded-for", "").split(",", 1)[0].strip()
+        # DigitalOcean App Platform은 실제 접속자 IP를 do-connecting-ip에
+        # 전달한다. 일반 환경은 X-Forwarded-For의 첫 주소를 사용한다.
+        candidate = request.headers.get("do-connecting-ip", "").strip()
+        if not candidate:
+            candidate = request.headers.get("x-forwarded-for", "").split(",", 1)[0].strip()
     try:
         return str(ipaddress.ip_address(candidate))
     except ValueError:

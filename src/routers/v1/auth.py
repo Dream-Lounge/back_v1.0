@@ -64,7 +64,7 @@ def _clear_session_cookies(response: Response) -> None:
 
 @router.post("/register", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
 def register(body: UserCreate, request: Request, db: Session = Depends(get_db)):
-    """학번 + 숫자 4자리 PIN으로 회원가입."""
+    """학번 + 8자 이상이며 특수문자를 포함한 비밀번호로 회원가입."""
     try:
         auth_service.enforce_registration_rate_limit(
             db,
@@ -203,10 +203,6 @@ def logout(
                 auth_service.revoke_local_session(db, current_user.id, refresh_token)
     except Exception as exc:
         logger.warning("Supabase 세션 폐기 실패: %s", exc)
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="로그아웃 처리에 실패했습니다. 잠시 후 다시 시도해주세요.",
-        )
     finally:
         _clear_session_cookies(response)
 

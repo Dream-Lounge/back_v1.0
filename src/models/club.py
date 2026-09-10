@@ -29,7 +29,7 @@ class Club(TimestampMixin, Base):
     description: Mapped[str | None] = mapped_column(Text)
     contact_email: Mapped[str | None] = mapped_column(String(255))
     contact_phone: Mapped[str | None] = mapped_column(String(20))
-    open_chat_url: Mapped[str | None] = mapped_column(String(255))
+    open_chat_url: Mapped[str | None] = mapped_column(Text)
     contact_links: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
     image_url: Mapped[str | None] = mapped_column(String(255))
     activity_images: Mapped[list | None] = mapped_column(JSON, nullable=True)

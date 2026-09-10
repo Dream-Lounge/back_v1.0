@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from datetime import datetime
 from typing import Optional
 
@@ -9,10 +9,17 @@ class PrivacyConsentCreate(BaseModel):
 
 
 class UserCreate(BaseModel):
-    """간소화 버전 계정: 학번과 숫자 4자리 PIN만 받는다."""
+    """간소화 버전 계정: 학번과 안전한 비밀번호만 받는다."""
 
     student_id: str = Field(..., pattern=r"^\d{10}$")
-    password: str = Field(..., pattern=r"^\d{4}$")
+    password: str = Field(..., min_length=8, max_length=128)
+
+    @field_validator("password")
+    @classmethod
+    def validate_password(cls, value: str) -> str:
+        if not any(not char.isalnum() and not char.isspace() for char in value):
+            raise ValueError("비밀번호에는 특수문자를 1개 이상 포함해주세요.")
+        return value
 
 
 class LoginRequest(BaseModel):

@@ -31,7 +31,7 @@ def test_registration_creates_auth_user_without_listing_all_users(db):
     ):
         user = auth_service.register_user(
             db,
-            auth_service.UserCreate(student_id="2021999999", password="1234"),
+            auth_service.UserCreate(student_id="2021999999", password="test1234!"),
         )
 
     assert user.auth_user_id == str(created_user.id)
@@ -57,7 +57,7 @@ def test_registration_releases_db_connection_before_auth_request(db):
     ):
         user = auth_service.register_user(
             db,
-            auth_service.UserCreate(student_id="2021999998", password="1234"),
+            auth_service.UserCreate(student_id="2021999998", password="test1234!"),
         )
 
     assert user.auth_user_id == str(created_user.id)

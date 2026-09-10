@@ -1,3 +1,5 @@
+from typing import Literal
+
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 from src.db.session import get_db
@@ -128,11 +130,37 @@ def list_club_applications(
     page: int = Query(1, ge=1),
     size: int = Query(20, ge=1, le=100),
     q: str | None = Query(None, max_length=100),
+    application_status: Literal["passed", "pending", "failed", "submitted"] | None = Query(
+        None, alias="status"
+    ),
     db: Session = Depends(get_db),
     current_user=Depends(require_club_president),
 ):
     """제출된 신청서 목록 조회 (회장 전용)."""
-    return application_service.get_club_applications(db, club_id, page, size, q)
+    return application_service.get_club_applications(
+        db, club_id, page, size, q, application_status
+    )
+
+
+@router.get(
+    "/clubs/{club_id}/applications/export",
+    response_model=Page[AdminApplicationResponse],
+)
+def export_club_applications(
+    club_id: str,
+    page: int = Query(1, ge=1),
+    size: int = Query(100, ge=1, le=200),
+    q: str | None = Query(None, max_length=100),
+    application_status: Literal["passed", "pending", "failed", "submitted"] | None = Query(
+        None, alias="status"
+    ),
+    db: Session = Depends(get_db),
+    current_user=Depends(require_club_president),
+):
+    """엑셀 생성용 신청서 상세 일괄 조회 (회장 전용)."""
+    return application_service.get_club_applications_export(
+        db, club_id, page, size, q, application_status
+    )
 
 
 @router.get("/clubs/{club_id}/applications/{application_id}", response_model=AdminApplicationResponse)

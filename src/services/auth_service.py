@@ -38,7 +38,7 @@ def _fingerprint(value: str) -> str:
 
 
 def _supabase_password(user_id: str, pin: str) -> str:
-    """4자리 PIN을 Supabase Auth용 고강도 내부 비밀번호로 파생한다."""
+    """사용자 비밀번호를 Supabase Auth용 고강도 내부 비밀번호로 파생한다."""
     return f"Dl1!{_fingerprint(f'supabase-password:{user_id}:{pin}')}"
 
 
@@ -174,7 +174,7 @@ def enforce_registration_rate_limit(
 
 
 def register_user(db: Session, data: UserCreate) -> User:
-    """학번과 4자리 PIN으로 DB 사용자와 Supabase Auth 계정을 생성한다."""
+    """학번과 검증된 비밀번호로 DB 사용자와 Supabase Auth 계정을 생성한다."""
     if db.query(User).filter(User.student_id == data.student_id).first():
         raise ValueError("이미 가입된 회원 정보입니다.")
 
@@ -329,8 +329,8 @@ def authenticate_user(db: Session, student_id: str, password: str) -> User | Non
     user = db.query(User).filter(User.student_id == student_id).first()
     if not user:
         return None
-    # 신규 Supabase 연결 계정도 로컬 PIN 해시를 유지해 Auth 비밀번호 연결이
-    # 깨졌을 때 본인 PIN 확인 후 안전하게 복구할 수 있게 한다.
+    # 신규 Supabase 연결 계정도 로컬 비밀번호 해시를 유지해 Auth 비밀번호 연결이
+    # 깨졌을 때 본인 확인 후 안전하게 복구할 수 있게 한다.
     if user.password_hash != "!supabase-auth-only" and not verify_password(
         password, user.password_hash
     ):
@@ -366,7 +366,7 @@ def create_supabase_session(db: Session, user: User, password: str):
         # 과거 Supabase Auth 계정이 원래 비밀번호로 연결되어 있으면 한 번만
         # 로그인한 뒤 새 내부 비밀번호로 전환한다.
         if user.auth_user_id:
-            # 로컬 PIN 검증을 통과한 신규 계정은 내부 비밀번호를 안전하게
+            # 로컬 비밀번호 검증을 통과한 신규 계정은 내부 비밀번호를 안전하게
             # 재설정할 수 있다. 과거 sentinel 계정은 아래 legacy 검증을 쓴다.
             if user.password_hash != "!supabase-auth-only":
                 get_supabase_admin_client().auth.admin.update_user_by_id(
