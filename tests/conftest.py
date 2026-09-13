@@ -8,6 +8,7 @@ from sqlalchemy.orm import sessionmaker
 # 테스트가 개발/운영 .env의 Supabase Auth 사용자를 생성하거나 삭제하지 않도록
 # 애플리케이션 설정이 로드되기 전에 외부 Auth 연동을 비활성화한다.
 os.environ["SUPABASE_SERVICE_KEY"] = ""
+os.environ["ALLOW_SELF_SERVICE_CLUB_ADMIN"] = "False"
 
 from src.main import app
 from src.db.base import Base
@@ -67,7 +68,7 @@ def register_and_login(client, db, student_id: str, password: str = "test1234!")
     """간편 회원가입 후 로그인하고 access_token을 반환한다."""
     register = client.post(
         "/api/v1/auth/register",
-        json={"student_id": student_id, "password": password},
+        json={"student_id": student_id, "name": "테스트사용자", "password": password},
     )
     assert register.status_code == 201
 

@@ -5,6 +5,7 @@ from src.models.club_member import ClubMember
 from src.models.club_admin import ClubAdmin
 from src.models.application import ApplicationAnswer, ApplicationForm, FormQuestion
 from src.models.user import User
+from src.core.config import settings
 from src.schemas.club import ClubCreate, ClubUpdate, FormCreate, FormUpdate, QuestionCreate, QuestionUpdate
 from src.utils.storage import cleanup_pending_club_images, delete_managed_club_images
 
@@ -113,16 +114,22 @@ def _replace_activity_image_records(
 
 
 def create_club(db: Session, user: User, data: ClubCreate) -> Club:
-    # 허용 목록 행을 잠가 컨테이너가 여러 개여도 같은 관리자의 동시
-    # 동아리 생성 요청을 직렬화한다. DB의 부분 고유 인덱스가 최종 방어선이다.
-    designated_admin = (
-        db.query(ClubAdmin)
-        .filter(ClubAdmin.user_id == user.id)
-        .with_for_update()
-        .first()
-    )
-    if not designated_admin:
-        raise PermissionError("동아리 관리자 권한이 없습니다.")
+    # 온보딩 개방 중에는 사용자 행을 잠가 동일 계정의 동시 생성 요청을
+    # 직렬화한다. 생성된 president 회원 관계가 이후의 관리자 자격이 되므로
+    # 읽기 전용 허용 목록에 새 행을 기록하지 않는다.
+    if settings.ALLOW_SELF_SERVICE_CLUB_ADMIN:
+        db.query(User).filter(User.id == user.id).with_for_update().one()
+    else:
+        # 허용 목록 행을 잠가 컨테이너가 여러 개여도 같은 관리자의 동시
+        # 동아리 생성 요청을 직렬화한다. DB의 부분 고유 인덱스가 최종 방어선이다.
+        designated_admin = (
+            db.query(ClubAdmin)
+            .filter(ClubAdmin.user_id == user.id)
+            .with_for_update()
+            .first()
+        )
+        if not designated_admin:
+            raise PermissionError("동아리 관리자 권한이 없습니다.")
     existing_presidency = db.query(ClubMember.id).filter(
         ClubMember.user_id == user.id,
         ClubMember.role == "president",

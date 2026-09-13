@@ -9,10 +9,19 @@ class PrivacyConsentCreate(BaseModel):
 
 
 class UserCreate(BaseModel):
-    """간소화 버전 계정: 학번과 안전한 비밀번호만 받는다."""
+    """간소화 버전 계정: 학번, 이름과 안전한 비밀번호를 받는다."""
 
     student_id: str = Field(..., pattern=r"^\d{10}$")
+    name: str = Field(..., min_length=1, max_length=50)
     password: str = Field(..., min_length=8, max_length=128)
+
+    @field_validator("name")
+    @classmethod
+    def validate_name(cls, value: str) -> str:
+        name = value.strip()
+        if not name:
+            raise ValueError("이름을 입력해주세요.")
+        return name
 
     @field_validator("password")
     @classmethod

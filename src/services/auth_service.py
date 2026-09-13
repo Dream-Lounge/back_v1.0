@@ -250,7 +250,7 @@ def enforce_refresh_rate_limit(
 
 
 def register_user(db: Session, data: UserCreate) -> User:
-    """학번과 검증된 비밀번호로 DB 사용자와 Supabase Auth 계정을 생성한다."""
+    """학번, 이름과 검증된 비밀번호로 DB 사용자와 Supabase Auth 계정을 생성한다."""
     if db.query(User).filter(User.student_id == data.student_id).first():
         raise ValueError("이미 가입된 회원 정보입니다.")
 
@@ -264,7 +264,7 @@ def register_user(db: Session, data: UserCreate) -> User:
         auth_user_id=None,
         student_id=data.student_id,
         password_hash=hash_password(data.password),
-        name=data.student_id,
+        name=data.name,
         phone=None,
         department=None,
         # Supabase Auth의 email/password 공급자를 쓰기 위한 내부 식별자다.
@@ -282,7 +282,10 @@ def register_user(db: Session, data: UserCreate) -> User:
                     "email": user.email,
                     "password": internal_password,
                     "email_confirm": True,
-                    "app_metadata": {"student_id": user.student_id},
+                    "app_metadata": {
+                        "student_id": user.student_id,
+                        "name": user.name,
+                    },
                 })
                 auth_user_id = str(created.user.id)
             except AuthApiError as exc:

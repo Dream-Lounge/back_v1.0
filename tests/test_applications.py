@@ -5,7 +5,7 @@ from tests.conftest import register_and_login
 APPLICANT = {
     "privacy_consent": True,
     "applicant_student_id": "2021000001",
-    "applicant_name": "테스트유저",
+    "applicant_name": "테스트사용자",
     "applicant_department": "컴퓨터공학과",
     "applicant_phone": "01012345678",
     "applicant_grade": "2",
@@ -140,7 +140,7 @@ class TestCreateApplication:
         assert resp.status_code == 201
 
     def test_draft_allows_blank_applicant_info(self, client, app_setup):
-        """프론트가 빈 기본정보 문자열을 보내도 임시저장은 허용."""
+        """빈 입력이어도 가입 프로필의 이름과 학번은 임시저장에 고정."""
         resp = client.post("/api/v1/applications", headers=app_setup["headers"], json={
             "form_id": app_setup["form_id"],
             "is_draft": True,
@@ -151,6 +151,8 @@ class TestCreateApplication:
             "applicant_grade": "",
         })
         assert resp.status_code == 201
+        assert resp.json()["applicant_student_id"] == "2021000001"
+        assert resp.json()["applicant_name"] == "테스트사용자"
 
     def test_create_requires_auth(self, client, app_setup):
         client.cookies.clear()
@@ -160,6 +162,16 @@ class TestCreateApplication:
             "answers": [],
         })
         assert resp.status_code in (401, 403)
+
+    def test_rejects_applicant_identity_tampering(self, client, app_setup):
+        resp = client.post("/api/v1/applications", headers=app_setup["headers"], json={
+            "form_id": app_setup["form_id"],
+            "is_draft": True,
+            "answers": [],
+            "applicant_student_id": "2099999999",
+            "applicant_name": "다른이름",
+        })
+        assert resp.status_code == 400
 
     def test_invalid_form_id(self, client, app_setup):
         resp = client.post("/api/v1/applications", headers=app_setup["headers"], json={
@@ -211,7 +223,8 @@ class TestUpdateApplication:
             "applicant_grade": "",
         })
         assert resp.status_code == 200
-        assert resp.json()["applicant_name"] is None
+        assert resp.json()["applicant_student_id"] == "2021000001"
+        assert resp.json()["applicant_name"] == "테스트사용자"
 
     def test_submit_from_draft(self, client, app_setup):
         app_id = self._create_draft(client, app_setup)

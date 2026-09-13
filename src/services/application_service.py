@@ -176,13 +176,15 @@ def _validate_answers(form_questions, answers, require_complete: bool) -> None:
 def _validate_applicant_info(user: User, data: ApplicationCreate | ApplicationUpdate) -> None:
     if data.applicant_student_id and data.applicant_student_id != user.student_id:
         raise ValueError("가입한 학번과 신청서 학번이 일치하지 않습니다.")
+    if data.applicant_name and data.applicant_name.strip() != user.name:
+        raise ValueError("가입한 이름과 신청서 이름이 일치하지 않습니다.")
 
 
 def _applicant_snapshot(user: User, data: ApplicationCreate) -> dict:
     _validate_applicant_info(user, data)
     values = {
         "applicant_student_id": user.student_id,
-        "applicant_name": (data.applicant_name or "").strip() or None,
+        "applicant_name": user.name,
         "applicant_department": (data.applicant_department or "").strip() or None,
         "applicant_phone": (data.applicant_phone or "").strip() or None,
         "applicant_grade": (data.applicant_grade or "").strip() or None,
@@ -287,8 +289,11 @@ def update_application(
     if submitting and not data.privacy_consent:
         raise ValueError("개인정보 수집 및 이용에 동의해주세요.")
     _validate_applicant_info(user, data)
+    # 학번과 이름은 가입 프로필을 원본으로 사용한다. 클라이언트가 값을
+    # 생략하거나 변조해도 임시저장·제출 시 프로필 값으로 고정된다.
+    app.applicant_student_id = user.student_id
+    app.applicant_name = user.name
     snapshot_updates = {
-        "applicant_name": data.applicant_name,
         "applicant_department": data.applicant_department,
         "applicant_phone": data.applicant_phone,
         "applicant_grade": data.applicant_grade,

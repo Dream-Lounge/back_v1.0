@@ -1,6 +1,10 @@
 """관리자(동아리 회장) 기능 통합 테스트."""
+from unittest.mock import patch
+
 import pytest
+
 from tests.conftest import register_and_login
+from src.core.config import settings
 
 
 # ── 공통 셋업 픽스처 ──────────────────────────────────────────────────────────
@@ -21,6 +25,58 @@ def setup(client, db, seeded_club, auth_headers, president_headers):
 # ── 동아리 등록·수정 ──────────────────────────────────────────────────────────
 
 class TestClubCreate:
+    def test_self_service_onboarding_grants_access_and_president_retains_access(
+        self, client, db, auth_headers
+    ):
+        from src.models.club_admin import ClubAdmin
+        from src.models.user import User
+
+        with patch.object(settings, "ALLOW_SELF_SERVICE_CLUB_ADMIN", True):
+            opened = client.get("/api/v1/auth/me", headers=auth_headers)
+            created = client.post(
+                "/api/v1/clubs",
+                headers=auth_headers,
+                json={"name": "온보딩동아리"},
+            )
+
+        user = db.query(User).filter(User.student_id == "2021000001").one()
+        assert opened.status_code == 200
+        assert opened.json()["is_club_admin"] is True
+        assert created.status_code == 201
+        assert db.get(ClubAdmin, user.id) is None
+
+        closed = client.get("/api/v1/auth/me", headers=auth_headers)
+        assert closed.status_code == 200
+        assert closed.json()["is_club_admin"] is True
+
+    def test_self_service_onboarding_does_not_persist_non_creator(
+        self, client, auth_headers
+    ):
+        with patch.object(settings, "ALLOW_SELF_SERVICE_CLUB_ADMIN", True):
+            opened = client.get("/api/v1/auth/me", headers=auth_headers)
+        closed = client.get("/api/v1/auth/me", headers=auth_headers)
+
+        assert opened.json()["is_club_admin"] is True
+        assert closed.json()["is_club_admin"] is False
+
+    def test_failed_self_service_creation_does_not_persist_admin(
+        self, client, db, auth_headers, seeded_club
+    ):
+        from src.models.club_admin import ClubAdmin
+        from src.models.user import User
+
+        with patch.object(settings, "ALLOW_SELF_SERVICE_CLUB_ADMIN", True):
+            response = client.post(
+                "/api/v1/clubs",
+                headers=auth_headers,
+                json={"name": seeded_club["club"].name},
+            )
+        db.rollback()
+
+        user = db.query(User).filter(User.student_id == "2021000001").one()
+        assert response.status_code == 400
+        assert db.get(ClubAdmin, user.id) is None
+
     def test_create_success(self, client, db, designated_admin_headers):
         resp = client.post("/api/v1/clubs", headers=designated_admin_headers, json={
             "name": "새동아리",
@@ -265,7 +321,7 @@ class TestApplicationReview:
             "is_draft": False,
             "privacy_consent": True,
             "applicant_student_id": "2021000001",
-            "applicant_name": "테스트유저",
+            "applicant_name": "테스트사용자",
             "applicant_department": "컴퓨터공학과",
             "applicant_phone": "01012345678",
             "applicant_grade": "2",
@@ -764,7 +820,7 @@ class TestNotifications:
         """신청서 제출 + 심사 → 알림 생성 상태."""
         app_resp = client.post("/api/v1/applications", headers=auth_headers, json={
             "applicant_student_id": "2021000001",
-            "applicant_name": "테스트유저",
+            "applicant_name": "테스트사용자",
             "applicant_department": "컴퓨터공학과",
             "applicant_phone": "01012345678",
             "applicant_grade": "2",

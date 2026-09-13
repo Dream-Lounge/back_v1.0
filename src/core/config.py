@@ -24,6 +24,9 @@ class Settings(BaseSettings):
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
     REFRESH_TOKEN_EXPIRE_DAYS: int = 14
     MAX_ACTIVE_SESSIONS_PER_USER: int = 5
+    # 동아리 회장 온보딩 기간에만 활성화한다. 활성화 중에는 가입자 모두가
+    # 관리자 화면에 접근할 수 있으며, 동아리를 만든 계정은 회장 관계로 보존된다.
+    ALLOW_SELF_SERVICE_CLUB_ADMIN: bool = False
 
     SUPABASE_URL: str = ""
     SUPABASE_ANON_KEY: str = ""

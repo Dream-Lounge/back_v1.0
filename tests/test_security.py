@@ -57,7 +57,7 @@ def test_user_info_exposes_only_operator_designated_admin_status(
     assert president.json()["is_club_admin"] is True
 
 
-def test_removing_allowlist_immediately_revokes_admin_api_access(
+def test_active_president_retains_admin_api_access_without_allowlist(
     client, db, seeded_club, president_headers
 ):
     db.query(ClubAdmin).filter(
@@ -71,8 +71,7 @@ def test_removing_allowlist_immediately_revokes_admin_api_access(
         json={"description": "권한 제거 후 수정 시도"},
     )
 
-    assert response.status_code == 403
-    assert "지정된 동아리 관리자" in response.json()["detail"]
+    assert response.status_code == 200
 
 
 def test_simple_logout_does_not_call_supabase(client, auth_headers):
@@ -97,11 +96,15 @@ def test_registration_creates_auth_user_without_listing_all_users(db):
     ):
         user = auth_service.register_user(
             db,
-            auth_service.UserCreate(student_id="2021999999", password="test1234!"),
+            auth_service.UserCreate(student_id="2021999999", name="보안테스트", password="test1234!"),
         )
 
     assert user.auth_user_id == str(created_user.id)
     admin_client.auth.admin.create_user.assert_called_once()
+    assert admin_client.auth.admin.create_user.call_args.args[0]["app_metadata"] == {
+        "student_id": "2021999999",
+        "name": "보안테스트",
+    }
     admin_client.auth.admin.list_users.assert_not_called()
 
 
@@ -123,7 +126,7 @@ def test_registration_releases_db_connection_before_auth_request(db):
     ):
         user = auth_service.register_user(
             db,
-            auth_service.UserCreate(student_id="2021999998", password="test1234!"),
+            auth_service.UserCreate(student_id="2021999998", name="연결테스트", password="test1234!"),
         )
 
     assert user.auth_user_id == str(created_user.id)

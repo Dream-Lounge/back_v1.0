@@ -41,24 +41,42 @@ class TestRegister:
     def test_success(self, client, db):
         resp = client.post("/api/v1/auth/register", json={
             "student_id": self.STUDENT_ID,
+            "name": "홍길동",
             "password": "test1234!",
         })
         assert resp.status_code == 201
         data = resp.json()
         assert data["student_id"] == self.STUDENT_ID
+        assert data["name"] == "홍길동"
         assert "email" not in data
         assert "email_verified" not in data
         assert client.cookies.get("dreamlounge_device")
 
     def test_duplicate_student_id(self, client):
-        payload = {"student_id": self.STUDENT_ID, "password": "test1234!"}
+        payload = {"student_id": self.STUDENT_ID, "name": "홍길동", "password": "test1234!"}
         client.post("/api/v1/auth/register", json=payload)
         resp = client.post("/api/v1/auth/register", json=payload)
         assert resp.status_code == 400
 
+    def test_requires_name(self, client):
+        resp = client.post("/api/v1/auth/register", json={
+            "student_id": self.STUDENT_ID,
+            "password": "test1234!",
+        })
+        assert resp.status_code == 422
+
+    def test_rejects_blank_name(self, client):
+        resp = client.post("/api/v1/auth/register", json={
+            "student_id": self.STUDENT_ID,
+            "name": "   ",
+            "password": "test1234!",
+        })
+        assert resp.status_code == 422
+
     def test_rejects_password_shorter_than_eight_characters(self, client):
         resp = client.post("/api/v1/auth/register", json={
             "student_id": self.STUDENT_ID,
+            "name": "홍길동",
             "password": "abc!123",
         })
         assert resp.status_code == 422
@@ -66,6 +84,7 @@ class TestRegister:
     def test_rejects_password_without_special_character(self, client):
         resp = client.post("/api/v1/auth/register", json={
             "student_id": self.STUDENT_ID,
+            "name": "홍길동",
             "password": "password123",
         })
         assert resp.status_code == 422
@@ -73,6 +92,7 @@ class TestRegister:
     def test_accepts_lowercase_password_without_uppercase(self, client):
         resp = client.post("/api/v1/auth/register", json={
             "student_id": self.STUDENT_ID,
+            "name": "홍길동",
             "password": "password!",
         })
         assert resp.status_code == 201
@@ -80,6 +100,7 @@ class TestRegister:
     def test_rejects_non_ten_digit_student_id(self, client):
         resp = client.post("/api/v1/auth/register", json={
             "student_id": "student",
+            "name": "홍길동",
             "password": "test1234!",
         })
         assert resp.status_code == 422
@@ -94,6 +115,7 @@ class TestLogin:
     def _register(self, client, db):
         client.post("/api/v1/auth/register", json={
             "student_id": self.STUDENT_ID,
+            "name": "홍길동",
             "password": self.PASSWORD,
         })
 
@@ -330,6 +352,7 @@ class TestAccountWithdrawal:
 
         register_resp = client.post("/api/v1/auth/register", json={
             "student_id": "2021000001",
+            "name": "재가입사용자",
             "password": "newpass8!",
         })
 
