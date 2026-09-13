@@ -5,7 +5,7 @@ import logging
 from sqlalchemy.orm import Session
 from src.db.session import get_db
 from src.core.security import decode_access_token
-from src.core.config import settings
+from src.core.config import is_self_service_club_admin_open
 from src.utils.supabase_jwt import decode_supabase_access_token
 
 bearer = HTTPBearer(auto_error=False)
@@ -78,7 +78,7 @@ def is_designated_club_admin(db: Session, user_id: str) -> bool:
     from src.models.club_admin import ClubAdmin
     from src.models.club_member import ClubMember
 
-    if settings.ALLOW_SELF_SERVICE_CLUB_ADMIN:
+    if is_self_service_club_admin_open():
         return True
     if db.query(ClubAdmin.user_id).filter(ClubAdmin.user_id == user_id).first() is not None:
         return True

@@ -5,7 +5,7 @@ from src.models.club_member import ClubMember
 from src.models.club_admin import ClubAdmin
 from src.models.application import ApplicationAnswer, ApplicationForm, FormQuestion
 from src.models.user import User
-from src.core.config import settings
+from src.core.config import is_self_service_club_admin_open
 from src.schemas.club import ClubCreate, ClubUpdate, FormCreate, FormUpdate, QuestionCreate, QuestionUpdate
 from src.utils.storage import cleanup_pending_club_images, delete_managed_club_images
 
@@ -117,7 +117,7 @@ def create_club(db: Session, user: User, data: ClubCreate) -> Club:
     # 온보딩 개방 중에는 사용자 행을 잠가 동일 계정의 동시 생성 요청을
     # 직렬화한다. 생성된 president 회원 관계가 이후의 관리자 자격이 되므로
     # 읽기 전용 허용 목록에 새 행을 기록하지 않는다.
-    if settings.ALLOW_SELF_SERVICE_CLUB_ADMIN:
+    if is_self_service_club_admin_open():
         db.query(User).filter(User.id == user.id).with_for_update().one()
     else:
         # 허용 목록 행을 잠가 컨테이너가 여러 개여도 같은 관리자의 동시

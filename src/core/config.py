@@ -5,6 +5,10 @@ from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings
 from sqlalchemy.engine import make_url
 
+# 환경변수를 수정할 수 없는 회장 온보딩 기간에만 사용하는 코드 스위치다.
+# 온보딩 종료 후 False로 바꾸고 재배포한다.
+FORCE_SELF_SERVICE_CLUB_ADMIN_OPEN = True
+
 
 class Settings(BaseSettings):
     DATABASE_URL: str
@@ -124,3 +128,8 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+
+def is_self_service_club_admin_open() -> bool:
+    """코드 임시 스위치가 켜졌거나 환경변수로 허용한 경우 온보딩을 연다."""
+    return FORCE_SELF_SERVICE_CLUB_ADMIN_OPEN or settings.ALLOW_SELF_SERVICE_CLUB_ADMIN
