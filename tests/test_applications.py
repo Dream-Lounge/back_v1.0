@@ -250,6 +250,7 @@ class TestUpdateApplication:
         self, client, db, app_setup, seeded_club, operation
     ):
         """임시저장 후 회장이 되면 수정과 제출 모두 불가."""
+        from src.models.club_admin import ClubAdmin
         from src.models.club_member import ClubMember
         from src.models.user import User
         from src.services import member_service
@@ -262,6 +263,7 @@ class TestUpdateApplication:
             role="member",
             status="active",
         ))
+        db.add(ClubAdmin(user_id=user.id, note="회장 전환 테스트"))
         db.commit()
         member_service.transfer_role(
             db,

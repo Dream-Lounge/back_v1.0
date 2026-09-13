@@ -1,6 +1,7 @@
 from src.models.user import User, PrivacyConsent, AuthRateLimit, AuthSession
 from src.models.club import Club, ClubActivityImage, ClubTag
 from src.models.club_member import ClubMember
+from src.models.club_admin import ClubAdmin
 from src.models.application import ApplicationForm, FormQuestion, Application, ApplicationAnswer
 from src.models.post import Post, Comment
 from src.models.notification import Notification
@@ -14,6 +15,7 @@ __all__ = [
     "ClubActivityImage",
     "ClubTag",
     "ClubMember",
+    "ClubAdmin",
     "ApplicationForm",
     "FormQuestion",
     "Application",

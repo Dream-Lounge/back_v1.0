@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 
 from src.core.security import create_access_token
 from src.core.config import settings
-from src.core.dependencies import get_current_user
+from src.core.dependencies import get_current_user, is_designated_club_admin
 from src.db.session import get_db
 from src.schemas.user import (
     UserCreate,
@@ -27,6 +27,17 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 
 ACCESS_COOKIE = "dreamlounge_access"
 REFRESH_COOKIE = "dreamlounge_refresh"
+
+
+def _user_info(db: Session, user) -> UserInfo:
+    return UserInfo(
+        id=user.id,
+        student_id=user.student_id,
+        name=user.name,
+        phone=user.phone,
+        department=user.department,
+        is_club_admin=is_designated_club_admin(db, user.id),
+    )
 
 
 def _cookie_path(api_path: str) -> str:
@@ -102,7 +113,12 @@ def login(body: LoginRequest, request: Request, response: Response, db: Session 
 
     user = auth_service.authenticate_user(db, body.student_id, body.password)
     if not user:
-        auth_service.record_login_failure(db, body.student_id, client_ip)
+        rate_limit_message = auth_service.record_login_failure(db, body.student_id, client_ip)
+        if rate_limit_message:
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail=rate_limit_message,
+            )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="학번 또는 비밀번호가 올바르지 않습니다.",
@@ -112,7 +128,12 @@ def login(body: LoginRequest, request: Request, response: Response, db: Session 
         session = auth_service.create_supabase_session(db, user, body.password)
     except AuthApiError as e:
         if e.code == "invalid_credentials":
-            auth_service.record_login_failure(db, body.student_id, client_ip)
+            rate_limit_message = auth_service.record_login_failure(db, body.student_id, client_ip)
+            if rate_limit_message:
+                raise HTTPException(
+                    status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                    detail=rate_limit_message,
+                )
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="학번 또는 비밀번호가 올바르지 않습니다.",
@@ -130,13 +151,13 @@ def login(body: LoginRequest, request: Request, response: Response, db: Session 
     if session:
         _set_session_cookies(response, session.access_token, session.refresh_token)
         return TokenResponse(
-            user=UserInfo.model_validate(user),
+            user=_user_info(db, user),
         )
     token = create_access_token({"sub": user.id})
     refresh_token = auth_service.create_local_session(db, user)
     _set_session_cookies(response, token, refresh_token)
     return TokenResponse(
-        user=UserInfo.model_validate(user),
+        user=_user_info(db, user),
     )
 
 
@@ -160,13 +181,13 @@ def refresh_session(
             access_token = create_access_token({"sub": user.id})
             _set_session_cookies(response, access_token, refresh_token)
             return TokenResponse(
-                user=UserInfo.model_validate(user),
+                user=_user_info(db, user),
             )
         except ValueError:
             session, user = auth_service.refresh_supabase_session(db, supplied_refresh_token)
             _set_session_cookies(response, session.access_token, session.refresh_token)
             return TokenResponse(
-                user=UserInfo.model_validate(user),
+                user=_user_info(db, user),
             )
     except (ValueError, AuthApiError) as e:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(e))
@@ -208,9 +229,9 @@ def logout(
 
 
 @router.get("/me", response_model=UserInfo)
-def get_me(current_user=Depends(get_current_user)):
+def get_me(db: Session = Depends(get_db), current_user=Depends(get_current_user)):
     """현재 로그인한 사용자 정보 조회."""
-    return current_user
+    return _user_info(db, current_user)
 
 
 @router.delete("/me", status_code=status.HTTP_204_NO_CONTENT)

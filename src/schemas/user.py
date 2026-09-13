@@ -41,6 +41,7 @@ class UserInfo(BaseModel):
     name: str
     phone: Optional[str]
     department: Optional[str]
+    is_club_admin: bool = False
 
     model_config = {"from_attributes": True}
 

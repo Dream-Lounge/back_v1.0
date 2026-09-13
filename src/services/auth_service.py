@@ -29,6 +29,17 @@ class RateLimitExceeded(ValueError):
     """요청 횟수 제한 초과."""
 
 
+def login_lock_message() -> str:
+    return (
+        f"로그인 {settings.LOGIN_MAX_ATTEMPTS}회 실패하여 "
+        f"{settings.LOGIN_LOCK_MINUTES}분 후 다시 시도해주세요!"
+    )
+
+
+def login_ip_rate_limit_message() -> str:
+    return "동일 네트워크의 로그인 요청이 너무 많습니다. 잠시 후 다시 시도해주세요."
+
+
 def _fingerprint(value: str) -> str:
     return hmac.new(
         settings.SECRET_KEY.encode("utf-8"),
@@ -103,35 +114,42 @@ def enforce_login_rate_limit(
     )
     user = db.query(User).filter(User.student_id == student_id).first()
     if user and user.locked_until and user.locked_until > datetime.utcnow():
-        raise RateLimitExceeded(
-            f"로그인 시도가 너무 많습니다. {settings.LOGIN_LOCK_MINUTES}분 후 다시 시도해주세요."
-        )
-    if (
-        subject_count >= settings.LOGIN_MAX_ATTEMPTS
-        or ip_count >= settings.LOGIN_IP_MAX_ATTEMPTS
-    ):
-        raise RateLimitExceeded(
-            f"로그인 시도가 너무 많습니다. {settings.LOGIN_LOCK_MINUTES}분 후 다시 시도해주세요."
-        )
+        raise RateLimitExceeded(login_lock_message())
+    if subject_count >= settings.LOGIN_MAX_ATTEMPTS:
+        raise RateLimitExceeded(login_lock_message())
+    if ip_count >= settings.LOGIN_IP_MAX_ATTEMPTS:
+        raise RateLimitExceeded(login_ip_rate_limit_message())
 
 
 def record_login_failure(
     db: Session, student_id: str, client_ip: str | None = None
-) -> None:
-    _record_event(db, "login_failure", student_id, client_ip)
+) -> str | None:
     user = (
         db.query(User)
         .filter(User.student_id == student_id)
         .with_for_update()
         .first()
     )
+    _record_event(db, "login_failure", student_id, client_ip)
+    db.flush()
+    since = datetime.utcnow() - timedelta(minutes=settings.LOGIN_LOCK_MINUTES)
+    subject_count, ip_count = _recent_event_count(
+        db, "login_failure", student_id, since, client_ip
+    )
+    is_locked = subject_count >= settings.LOGIN_MAX_ATTEMPTS
+    is_ip_limited = ip_count >= settings.LOGIN_IP_MAX_ATTEMPTS
     if user:
-        user.failed_login_count += 1
-        if user.failed_login_count >= settings.LOGIN_MAX_ATTEMPTS:
+        user.failed_login_count = subject_count
+        if is_locked:
             user.locked_until = datetime.utcnow() + timedelta(
                 minutes=settings.LOGIN_LOCK_MINUTES
             )
     db.commit()
+    if is_locked:
+        return login_lock_message()
+    if is_ip_limited:
+        return login_ip_rate_limit_message()
+    return None
 
 
 def clear_login_failures(db: Session, student_id: str) -> None:

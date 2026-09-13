@@ -124,7 +124,7 @@ class TestGetClub:
 
 class TestClubActivityImages:
     def test_create_stores_caption_without_changing_legacy_urls(
-        self, client, auth_headers
+        self, client, designated_admin_headers
     ):
         details = [
             {
@@ -139,7 +139,7 @@ class TestClubActivityImages:
 
         resp = client.post(
             "/api/v1/clubs",
-            headers=auth_headers,
+            headers=designated_admin_headers,
             json={"name": "사진설명동아리", "activity_image_details": details},
         )
 

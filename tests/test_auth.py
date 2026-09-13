@@ -121,6 +121,28 @@ class TestLogin:
         })
         assert resp.status_code == 401
 
+    def test_fifth_wrong_password_returns_lock_message(self, client, db):
+        self._register(client, db)
+        payload = {
+            "student_id": self.STUDENT_ID,
+            "password": "wrong-password!",
+        }
+
+        for _ in range(4):
+            resp = client.post("/api/v1/auth/login", json=payload)
+            assert resp.status_code == 401
+
+        fifth = client.post("/api/v1/auth/login", json=payload)
+        assert fifth.status_code == 429
+        assert fifth.json()["detail"] == "로그인 5회 실패하여 15분 후 다시 시도해주세요!"
+
+        locked = client.post("/api/v1/auth/login", json={
+            "student_id": self.STUDENT_ID,
+            "password": self.PASSWORD,
+        })
+        assert locked.status_code == 429
+        assert locked.json()["detail"] == "로그인 5회 실패하여 15분 후 다시 시도해주세요!"
+
     def test_unknown_student_id(self, client):
         resp = client.post("/api/v1/auth/login", json={
             "student_id": "9999999999",

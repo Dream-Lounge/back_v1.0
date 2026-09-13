@@ -21,18 +21,24 @@ def _jpeg_file(name: str = "photo.jpg", size: int = 1024):
 
 
 class TestImageUpload:
-    def test_authenticated_user_can_upload_before_club_creation(self, client, auth_headers):
+    def test_designated_admin_can_upload_before_club_creation(self, client, designated_admin_headers):
         storage = _mock_supabase()
         with patch("src.utils.storage.get_supabase_admin_client", return_value=storage):
             resp = client.post(
                 "/api/v1/clubs/images",
-                headers=auth_headers,
+                headers=designated_admin_headers,
                 files={"file": _jpeg_file()},
             )
 
         assert resp.status_code == 200
         upload_path = storage.storage.from_.return_value.upload.call_args.kwargs["path"]
         assert upload_path.startswith("clubs/pending/")
+
+    def test_regular_user_cannot_upload_before_club_creation(self, client, auth_headers):
+        resp = client.post(
+            "/api/v1/clubs/images", headers=auth_headers, files={"file": _jpeg_file()}
+        )
+        assert resp.status_code == 403
 
     def test_precreation_upload_requires_auth(self, client):
         resp = client.post("/api/v1/clubs/images", files={"file": _jpeg_file()})

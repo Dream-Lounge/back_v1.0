@@ -1,12 +1,78 @@
 import io
 from unittest.mock import MagicMock, patch
 
+from jose import JWTError
 from supabase_auth.errors import AuthApiError
 
 from src.core.config import settings
 from src.core.security import hash_password
 from src.models.user import User
+from src.models.club_admin import ClubAdmin
 from src.services import auth_service
+
+
+def test_supabase_access_token_is_verified_locally(client, db):
+    user = User(
+        auth_user_id="00000000-0000-0000-0000-000000000777",
+        student_id="2021777777",
+        password_hash=hash_password("Password1!"),
+        name="로컬검증",
+        email="2021777777@simple.dreamlounge.local",
+        email_verified=False,
+    )
+    db.add(user)
+    db.commit()
+
+    with (
+        patch(
+            "src.core.dependencies.decode_access_token",
+            side_effect=JWTError("not a local token"),
+        ),
+        patch(
+            "src.core.dependencies.decode_supabase_access_token",
+            return_value={"sub": user.auth_user_id},
+        ) as local_verify,
+        patch("src.utils.supabase_client.create_supabase_auth_client") as remote_client,
+    ):
+        response = client.get(
+            "/api/v1/auth/me",
+            headers={"Authorization": "Bearer supabase-es256-token"},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["student_id"] == user.student_id
+    local_verify.assert_called_once_with("supabase-es256-token")
+    remote_client.assert_not_called()
+
+
+def test_user_info_exposes_only_operator_designated_admin_status(
+    client, auth_headers, president_headers
+):
+    regular = client.get("/api/v1/auth/me", headers=auth_headers)
+    president = client.get("/api/v1/auth/me", headers=president_headers)
+
+    assert regular.status_code == 200
+    assert regular.json()["is_club_admin"] is False
+    assert president.status_code == 200
+    assert president.json()["is_club_admin"] is True
+
+
+def test_removing_allowlist_immediately_revokes_admin_api_access(
+    client, db, seeded_club, president_headers
+):
+    db.query(ClubAdmin).filter(
+        ClubAdmin.user_id == seeded_club["president"].id
+    ).delete()
+    db.commit()
+
+    response = client.patch(
+        f"/api/v1/clubs/{seeded_club['club'].id}",
+        headers=president_headers,
+        json={"description": "권한 제거 후 수정 시도"},
+    )
+
+    assert response.status_code == 403
+    assert "지정된 동아리 관리자" in response.json()["detail"]
 
 
 def test_simple_logout_does_not_call_supabase(client, auth_headers):

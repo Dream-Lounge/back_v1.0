@@ -88,6 +88,18 @@ def auth_headers(user_token) -> dict:
 
 
 @pytest.fixture
+def designated_admin_headers(db, auth_headers) -> dict:
+    """일반 테스트 사용자를 운영자 지정 관리자 목록에 등록한다."""
+    from src.models.club_admin import ClubAdmin
+    from src.models.user import User
+
+    user = db.query(User).filter(User.student_id == "2021000001").one()
+    db.add(ClubAdmin(user_id=user.id, note="테스트 지정 관리자"))
+    db.commit()
+    return auth_headers
+
+
+@pytest.fixture
 def president_token(client, seeded_club) -> str:
     resp = client.post("/api/v1/auth/login", json={"student_id": "PRES0000001", "password": "Password1!"})
     token = client.cookies.get("dreamlounge_access")
@@ -106,6 +118,7 @@ def seeded_club(db) -> dict:
     from src.models.user import User
     from src.models.club import Club
     from src.models.club_member import ClubMember
+    from src.models.club_admin import ClubAdmin
     from src.models.application import ApplicationForm, FormQuestion
     from src.core.security import hash_password
 
@@ -130,6 +143,7 @@ def seeded_club(db) -> dict:
     db.flush()
 
     db.add(ClubMember(club_id=club.id, user_id=president.id, role="president", status="active"))
+    db.add(ClubAdmin(user_id=president.id, note="테스트 동아리 회장"))
 
     form = ApplicationForm(club_id=club.id, title="2025년 신입부원 모집")
     db.add(form)

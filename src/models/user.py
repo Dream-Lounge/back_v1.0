@@ -25,6 +25,9 @@ class User(TimestampMixin, Base):
 
     privacy_consent = relationship("PrivacyConsent", back_populates="user", uselist=False)
     club_memberships = relationship("ClubMember", back_populates="user")
+    club_admin_record = relationship(
+        "ClubAdmin", back_populates="user", uselist=False, cascade="all, delete-orphan"
+    )
     applications = relationship("Application", back_populates="user")
     notifications = relationship("Notification", back_populates="recipient")
     auth_sessions = relationship(

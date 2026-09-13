@@ -2,6 +2,7 @@ from datetime import datetime
 from sqlalchemy.orm import Session, selectinload
 
 from src.models.club_member import ClubMember
+from src.models.club_admin import ClubAdmin
 
 
 def list_members(db: Session, club_id: str, page: int = 1, size: int = 20) -> dict:
@@ -57,6 +58,9 @@ def withdraw_member(db: Session, club_id: str, target_user_id: str) -> None:
 def transfer_role(db: Session, club_id: str, current_president_id: str, target_user_id: str) -> None:
     if current_president_id == target_user_id:
         raise ValueError("본인에게 권한을 이전할 수 없습니다.")
+
+    if db.get(ClubAdmin, target_user_id) is None:
+        raise ValueError("운영자가 지정한 관리자에게만 회장 권한을 이전할 수 있습니다.")
 
     new_president = db.query(ClubMember).filter(
         ClubMember.club_id == club_id,

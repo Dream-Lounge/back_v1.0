@@ -21,8 +21,8 @@ def setup(client, db, seeded_club, auth_headers, president_headers):
 # ── 동아리 등록·수정 ──────────────────────────────────────────────────────────
 
 class TestClubCreate:
-    def test_create_success(self, client, db, auth_headers):
-        resp = client.post("/api/v1/clubs", headers=auth_headers, json={
+    def test_create_success(self, client, db, designated_admin_headers):
+        resp = client.post("/api/v1/clubs", headers=designated_admin_headers, json={
             "name": "새동아리",
             "club_type": "central",
             "description": "설명",
@@ -34,8 +34,8 @@ class TestClubCreate:
         assert data["name"] == "새동아리"
         assert len(data["tags"]) == 1
 
-    def test_create_duplicate_name(self, client, auth_headers, seeded_club):
-        resp = client.post("/api/v1/clubs", headers=auth_headers, json={
+    def test_create_duplicate_name(self, client, designated_admin_headers, seeded_club):
+        resp = client.post("/api/v1/clubs", headers=designated_admin_headers, json={
             "name": seeded_club["club"].name,
         })
         assert resp.status_code == 400
@@ -44,11 +44,18 @@ class TestClubCreate:
         resp = client.post("/api/v1/clubs", json={"name": "비회원동아리"})
         assert resp.status_code in (401, 403)
 
-    def test_creator_becomes_president(self, client, db, auth_headers):
+    def test_regular_user_cannot_create_club(self, client, auth_headers):
+        resp = client.post(
+            "/api/v1/clubs", headers=auth_headers, json={"name": "권한없는동아리"}
+        )
+        assert resp.status_code == 403
+        assert "지정된 동아리 관리자" in resp.json()["detail"]
+
+    def test_creator_becomes_president(self, client, db, designated_admin_headers):
         from src.models.user import User
         from src.models.club_member import ClubMember
 
-        resp = client.post("/api/v1/clubs", headers=auth_headers, json={"name": "내동아리"})
+        resp = client.post("/api/v1/clubs", headers=designated_admin_headers, json={"name": "내동아리"})
         club_id = resp.json()["id"]
 
         user = db.query(User).filter(User.student_id == "2021000001").first()
@@ -83,8 +90,14 @@ class TestClubUpdate:
         assert resp.status_code == 403
 
     def test_president_cannot_update_another_club(self, client, db, setup):
+        from src.models.club_admin import ClubAdmin
+        from src.models.user import User
+
         other_token = register_and_login(client, db, "2021999998")
         other_headers = {"Authorization": f"Bearer {other_token}"}
+        other_user = db.query(User).filter(User.student_id == "2021999998").one()
+        db.add(ClubAdmin(user_id=other_user.id, note="다른 테스트 관리자"))
+        db.commit()
         own_club = client.post(
             "/api/v1/clubs",
             headers=other_headers,
@@ -653,8 +666,12 @@ class TestMemberManagement:
         assert resp.status_code == 400
 
     def test_transfer_role(self, client, db, club_with_member):
+        from src.models.club_admin import ClubAdmin
         from src.models.club_member import ClubMember
         from src.models.club import Club
+
+        db.add(ClubAdmin(user_id=club_with_member["member_user_id"], note="차기 회장"))
+        db.commit()
 
         resp = client.patch(
             f"/api/v1/clubs/{club_with_member['club_id']}/members/{club_with_member['member_user_id']}/role",
@@ -676,6 +693,14 @@ class TestMemberManagement:
 
         club = db.get(Club, club_with_member["club_id"])
         assert club.president_id == club_with_member["member_user_id"]
+
+    def test_cannot_transfer_role_to_undesignated_member(self, client, club_with_member):
+        resp = client.patch(
+            f"/api/v1/clubs/{club_with_member['club_id']}/members/{club_with_member['member_user_id']}/role",
+            headers=club_with_member["president_headers"],
+        )
+        assert resp.status_code == 400
+        assert "운영자가 지정한 관리자" in resp.json()["detail"]
 
 
 # ── 알림 ──────────────────────────────────────────────────────────────────────

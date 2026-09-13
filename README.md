@@ -68,6 +68,17 @@ uv run alembic upgrade head
 uv run python scripts/verify_production_db.py
 ```
 
+DigitalOcean 컨테이너 2개에서 컨테이너별 `DB_POOL_SIZE=12`,
+`DB_MAX_OVERFLOW=8`을 사용할 경우 최대 백엔드 연결은 40개입니다.
+마이그레이션 `0021`은 `dreamlounge_backend` 역할 제한을 50개로 조정합니다.
+배포 후 SQL Editor에서 다음 쿼리 결과가 `50`인지 확인합니다.
+
+```sql
+SELECT rolname, rolconnlimit
+FROM pg_roles
+WHERE rolname = 'dreamlounge_backend';
+```
+
 기존 프로젝트에서 회원을 제외한 동아리 카탈로그만 옮길 때는 먼저 dry run을
 실행한 후 `--apply`를 사용합니다.
 

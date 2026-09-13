@@ -14,8 +14,8 @@ class Settings(BaseSettings):
     ENVIRONMENT: str = "development"
     LOG_LEVEL: str = "INFO"
     APP_DEBUG: bool = False
-    DB_POOL_SIZE: int = 5
-    DB_MAX_OVERFLOW: int = 3
+    DB_POOL_SIZE: int = 12
+    DB_MAX_OVERFLOW: int = 8
     DB_POOL_TIMEOUT_SECONDS: int = 15
     DB_POOL_RECYCLE_SECONDS: int = 300
 
@@ -29,6 +29,7 @@ class Settings(BaseSettings):
     SUPABASE_ANON_KEY: str = ""
     SUPABASE_SERVICE_KEY: str = ""
     SUPABASE_STORAGE_BUCKET: str = "club-images"
+    SUPABASE_JWKS_CACHE_SECONDS: int = 600
 
     FRONTEND_URL: str = "http://localhost:5173"
     ALLOWED_ORIGINS: str = '["http://localhost:5173", "http://localhost:3000"]'

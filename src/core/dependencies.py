@@ -1,11 +1,11 @@
 from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from jose import JWTError
-from supabase_auth.errors import AuthApiError
 import logging
 from sqlalchemy.orm import Session
 from src.db.session import get_db
 from src.core.security import decode_access_token
+from src.utils.supabase_jwt import decode_supabase_access_token
 
 bearer = HTTPBearer(auto_error=False)
 logger = logging.getLogger(__name__)
@@ -36,21 +36,15 @@ def get_current_user(
             raise ValueError
         user = db.get(User, user_id)
     except (JWTError, ValueError):
-        # Supabase access token은 프로젝트 서명키로 검증해야 하므로 Auth
-        # 서버에서 사용자 정보를 검증하고 로컬 프로필과 연결한다.
+        # 운영 Supabase access token은 ES256 공개키로 로컬 검증한다.
+        # 잘못된 토큰을 Auth 서버로 전달하는 fallback을 두지 않아 원격
+        # 검증 지연과 공격자가 유발할 수 있는 Auth 요청 증폭을 차단한다.
         try:
-            from src.utils.supabase_client import create_supabase_auth_client
-
-            auth_response = create_supabase_auth_client().auth.get_user(
-                access_token
-            )
-            auth_user = auth_response.user
-            if not auth_user:
-                raise ValueError
+            payload = decode_supabase_access_token(access_token)
             user = db.query(User).filter(
-                User.auth_user_id == str(auth_user.id)
+                User.auth_user_id == payload["sub"]
             ).first()
-        except (AuthApiError, ValueError, RuntimeError):
+        except (JWTError, ValueError, RuntimeError):
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="유효하지 않은 인증 토큰입니다.",
@@ -78,8 +72,25 @@ def get_current_user(
     return user
 
 
-def require_club_president(club_id: str, current_user=Depends(get_current_user), db: Session = Depends(get_db)):
-    """해당 동아리의 현직 회장인지 확인. 아니면 403."""
+def is_designated_club_admin(db: Session, user_id: str) -> bool:
+    """운영자가 관리자 허용 목록에 등록한 사용자인지 확인한다."""
+    from src.models.club_admin import ClubAdmin
+
+    return db.query(ClubAdmin.user_id).filter(ClubAdmin.user_id == user_id).first() is not None
+
+
+def require_club_admin(current_user=Depends(get_current_user), db: Session = Depends(get_db)):
+    """운영자가 지정한 동아리 관리자만 통과시킨다."""
+    if not is_designated_club_admin(db, current_user.id):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="지정된 동아리 관리자만 접근할 수 있습니다.",
+        )
+    return current_user
+
+
+def require_club_president(club_id: str, current_user=Depends(require_club_admin), db: Session = Depends(get_db)):
+    """지정 관리자이면서 해당 동아리의 현직 회장인지 확인한다."""
     from src.models.club_member import ClubMember
     membership = db.query(ClubMember).filter(
         ClubMember.club_id == club_id,

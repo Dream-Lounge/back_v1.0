@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query, 
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from src.db.session import get_db
-from src.core.dependencies import get_current_user, require_club_president
+from src.core.dependencies import require_club_admin, require_club_president
 from src.schemas.club import (
     ClubCreate, ClubUpdate, ClubResponse,
     ApplicationFormResponse, FormCreate, FormUpdate,
@@ -26,10 +26,10 @@ class ImageUploadResponse(BaseModel):
 async def upload_image_before_club_creation(
     request: Request,
     file: UploadFile = File(...),
-    current_user=Depends(get_current_user),
+    current_user=Depends(require_club_admin),
     db: Session = Depends(get_db),
 ):
-    """동아리 생성 전 이미지 업로드 (모든 로그인 사용자)."""
+    """동아리 생성 전 이미지 업로드 (지정 관리자 전용)."""
     try:
         auth_service.enforce_image_upload_rate_limit(
             db, current_user.id, get_rate_limit_client_ip(request)
@@ -110,9 +110,9 @@ def get_club_form(club_id: str, db: Session = Depends(get_db)):
 def create_club(
     body: ClubCreate,
     db: Session = Depends(get_db),
-    current_user=Depends(get_current_user),
+    current_user=Depends(require_club_admin),
 ):
-    """동아리 등록 (로그인 필요). 등록 즉시 회장 권한 부여."""
+    """동아리 등록 (지정 관리자 전용). 등록 즉시 회장 권한 부여."""
     try:
         return club_service.create_club(db, current_user, body)
     except ValueError as e:
