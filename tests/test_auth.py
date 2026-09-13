@@ -48,6 +48,7 @@ class TestRegister:
         assert data["student_id"] == self.STUDENT_ID
         assert "email" not in data
         assert "email_verified" not in data
+        assert client.cookies.get("dreamlounge_device")
 
     def test_duplicate_student_id(self, client):
         payload = {"student_id": self.STUDENT_ID, "password": "test1234!"}
@@ -134,14 +135,14 @@ class TestLogin:
 
         fifth = client.post("/api/v1/auth/login", json=payload)
         assert fifth.status_code == 429
-        assert fifth.json()["detail"] == "로그인 5회 실패하여 15분 후 다시 시도해주세요!"
+        assert fifth.json()["detail"] == "로그인 5회 실패하여 10분 후 다시 시도해주세요!"
 
         locked = client.post("/api/v1/auth/login", json={
             "student_id": self.STUDENT_ID,
             "password": self.PASSWORD,
         })
         assert locked.status_code == 429
-        assert locked.json()["detail"] == "로그인 5회 실패하여 15분 후 다시 시도해주세요!"
+        assert locked.json()["detail"] == "로그인 5회 실패하여 10분 후 다시 시도해주세요!"
 
     def test_unknown_student_id(self, client):
         resp = client.post("/api/v1/auth/login", json={
@@ -153,7 +154,7 @@ class TestLogin:
     def test_token_is_usable(self, client, db):
         """발급된 토큰으로 인증이 필요한 엔드포인트 접근 가능한지 확인."""
         self._register(client, db)
-        login_resp = client.post("/api/v1/auth/login", json={
+        client.post("/api/v1/auth/login", json={
             "student_id": self.STUDENT_ID,
             "password": self.PASSWORD,
         })
@@ -165,6 +166,27 @@ class TestLogin:
 
 
 class TestRefreshSession:
+    def test_repeated_refresh_requests_are_rate_limited_per_device(self, client):
+        with (
+            patch.object(settings, "REFRESH_DEVICE_MAX_PER_10_MINUTES", 1),
+            patch(
+                "src.routers.v1.auth.auth_service.refresh_supabase_session",
+                side_effect=ValueError("유효하지 않은 갱신 토큰입니다."),
+            ),
+        ):
+            first = client.post(
+                "/api/v1/auth/refresh",
+                json={"refresh_token": "invalid-token"},
+            )
+            second = client.post(
+                "/api/v1/auth/refresh",
+                json={"refresh_token": "invalid-token"},
+            )
+
+        assert first.status_code == 401
+        assert second.status_code == 429
+        assert "세션 갱신 요청" in second.json()["detail"]
+
     def test_success(self, client, db):
         from src.models.user import User
 

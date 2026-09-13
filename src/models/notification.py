@@ -4,6 +4,7 @@ from datetime import datetime
 from sqlalchemy import String, Boolean, DateTime, JSON, ForeignKey
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from src.db.base import Base
+from src.utils.time import utc_now_naive
 
 
 class Notification(Base):
@@ -16,6 +17,6 @@ class Notification(Base):
     message: Mapped[str] = mapped_column(String(500), nullable=False)
     payload: Mapped[dict | None] = mapped_column(JSON)
     is_read: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now_naive, nullable=False)
 
     recipient = relationship("User", back_populates="notifications")

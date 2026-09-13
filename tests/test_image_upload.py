@@ -20,6 +20,26 @@ def _jpeg_file(name: str = "photo.jpg", size: int = 1024):
     return (name, io.BytesIO(b"\xff\xd8\xff" + b"\x00" * size), "image/jpeg")
 
 
+def test_removed_managed_image_is_deleted_from_storage():
+    from src.core.config import settings
+    from src.utils.storage import delete_managed_club_images
+
+    storage = _mock_supabase()
+    managed_url = (
+        f"https://project.supabase.co/storage/v1/object/public/"
+        f"{settings.SUPABASE_STORAGE_BUCKET}/clubs/club-id/old.jpg"
+    )
+    with (
+        patch.object(settings, "SUPABASE_SERVICE_KEY", "test-service-key"),
+        patch("src.utils.storage.get_supabase_admin_client", return_value=storage),
+    ):
+        delete_managed_club_images({managed_url, "https://example.com/external.jpg"})
+
+    storage.storage.from_.return_value.remove.assert_called_once_with(
+        ["clubs/club-id/old.jpg"]
+    )
+
+
 class TestImageUpload:
     def test_designated_admin_can_upload_before_club_creation(self, client, designated_admin_headers):
         storage = _mock_supabase()

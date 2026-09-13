@@ -15,7 +15,8 @@ from src.utils.client_ip import get_rate_limit_client_ip
 
 router = APIRouter(prefix="/clubs", tags=["clubs"])
 
-PUBLIC_CLUB_CACHE_CONTROL = "public, max-age=30, s-maxage=60, stale-while-revalidate=300"
+# 모집 상태 변경이 수 분간 남지 않도록 짧게 캐시하고 재검증한다.
+PUBLIC_CLUB_CACHE_CONTROL = "public, max-age=5, s-maxage=10, must-revalidate"
 
 
 class ImageUploadResponse(BaseModel):

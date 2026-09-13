@@ -45,7 +45,7 @@ def get_posts(db: Session, club_id: str) -> list[dict]:
     posts = (
         db.query(Post)
         .options(selectinload(Post.author), selectinload(Post.comments))
-        .filter(Post.club_id == club_id, Post.is_deleted == False)
+        .filter(Post.club_id == club_id, Post.is_deleted.is_(False))
         .order_by(Post.is_notice.desc(), Post.created_at.desc())
         .all()
     )
@@ -71,9 +71,9 @@ def get_post(db: Session, club_id: str, post_id: str) -> dict | None:
         .options(
             selectinload(Post.author),
             selectinload(Post.comments).selectinload(Comment.author),
-            with_loader_criteria(Comment, Comment.is_deleted == False),
+            with_loader_criteria(Comment, Comment.is_deleted.is_(False)),
         )
-        .filter(Post.club_id == club_id, Post.id == post_id, Post.is_deleted == False)
+        .filter(Post.club_id == club_id, Post.id == post_id, Post.is_deleted.is_(False))
         .first()
     )
     if not post:
@@ -107,7 +107,7 @@ def get_post(db: Session, club_id: str, post_id: str) -> dict | None:
 
 def update_post(db: Session, club_id: str, post_id: str, user: User, data: PostUpdate) -> Post:
     post = db.query(Post).filter(
-        Post.club_id == club_id, Post.id == post_id, Post.is_deleted == False,
+        Post.club_id == club_id, Post.id == post_id, Post.is_deleted.is_(False),
     ).first()
     if not post:
         raise LookupError("게시글을 찾을 수 없습니다.")
@@ -124,7 +124,7 @@ def update_post(db: Session, club_id: str, post_id: str, user: User, data: PostU
 
 def delete_post(db: Session, club_id: str, post_id: str, user: User) -> None:
     post = db.query(Post).filter(
-        Post.club_id == club_id, Post.id == post_id, Post.is_deleted == False,
+        Post.club_id == club_id, Post.id == post_id, Post.is_deleted.is_(False),
     ).first()
     if not post:
         raise LookupError("게시글을 찾을 수 없습니다.")
@@ -138,7 +138,7 @@ def delete_post(db: Session, club_id: str, post_id: str, user: User) -> None:
 def toggle_notice(db: Session, club_id: str, post_id: str) -> Post:
     """회장 전용: 게시글 공지 상태 전환."""
     post = db.query(Post).filter(
-        Post.club_id == club_id, Post.id == post_id, Post.is_deleted == False,
+        Post.club_id == club_id, Post.id == post_id, Post.is_deleted.is_(False),
     ).first()
     if not post:
         raise LookupError("게시글을 찾을 수 없습니다.")
@@ -160,7 +160,7 @@ def create_comment(db: Session, post_id: str, user: User, content: str) -> Comme
 
 def delete_comment(db: Session, club_id: str, post_id: str, comment_id: str, user: User) -> None:
     comment = db.query(Comment).filter(
-        Comment.id == comment_id, Comment.post_id == post_id, Comment.is_deleted == False,
+        Comment.id == comment_id, Comment.post_id == post_id, Comment.is_deleted.is_(False),
     ).first()
     if not comment:
         raise LookupError("댓글을 찾을 수 없습니다.")

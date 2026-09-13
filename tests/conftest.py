@@ -71,7 +71,7 @@ def register_and_login(client, db, student_id: str, password: str = "test1234!")
     )
     assert register.status_code == 201
 
-    resp = client.post("/api/v1/auth/login", json={"student_id": student_id, "password": password})
+    client.post("/api/v1/auth/login", json={"student_id": student_id, "password": password})
     token = client.cookies.get("dreamlounge_access")
     assert token
     return token
@@ -101,7 +101,7 @@ def designated_admin_headers(db, auth_headers) -> dict:
 
 @pytest.fixture
 def president_token(client, seeded_club) -> str:
-    resp = client.post("/api/v1/auth/login", json={"student_id": "PRES0000001", "password": "Password1!"})
+    client.post("/api/v1/auth/login", json={"student_id": "PRES0000001", "password": "Password1!"})
     token = client.cookies.get("dreamlounge_access")
     assert token
     return token

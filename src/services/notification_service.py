@@ -9,10 +9,14 @@ def _create(db: Session, recipient_id: str, noti_type: str, message: str, payloa
     return n
 
 
-def send_application_result(db: Session, user_id: str, club_name: str, status: str) -> None:
+def queue_application_result(db: Session, user_id: str, club_name: str, status: str) -> None:
     status_label = {"pending": "보류(1차합격)", "passed": "최종합격", "failed": "불합격"}[status]
     message = f"[{club_name}] 동아리 신청 결과: {status_label}"
     _create(db, user_id, "application_result", message, {"club_name": club_name, "status": status})
+
+
+def send_application_result(db: Session, user_id: str, club_name: str, status: str) -> None:
+    queue_application_result(db, user_id, club_name, status)
     db.commit()
 
 
@@ -53,6 +57,6 @@ def mark_as_read(db: Session, user_id: str, notification_id: str) -> Notificatio
 def mark_all_as_read(db: Session, user_id: str) -> None:
     db.query(Notification).filter(
         Notification.recipient_id == user_id,
-        Notification.is_read == False,
+        Notification.is_read.is_(False),
     ).update({"is_read": True})
     db.commit()

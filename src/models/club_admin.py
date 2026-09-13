@@ -6,6 +6,7 @@ from sqlalchemy import DateTime, ForeignKey, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from src.db.base import Base
+from src.utils.time import utc_now_naive
 
 
 class ClubAdmin(Base):
@@ -24,7 +25,7 @@ class ClubAdmin(Base):
     )
     note: Mapped[str | None] = mapped_column(String(200), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime, default=datetime.utcnow, nullable=False
+        DateTime, default=utc_now_naive, nullable=False
     )
 
     user = relationship("User", back_populates="club_admin_record")

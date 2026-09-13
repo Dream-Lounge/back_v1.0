@@ -1,8 +1,8 @@
-from datetime import datetime
 from sqlalchemy.orm import Session, selectinload
 
 from src.models.club_member import ClubMember
 from src.models.club_admin import ClubAdmin
+from src.utils.time import utc_now_naive
 
 
 def list_members(db: Session, club_id: str, page: int = 1, size: int = 20) -> dict:
@@ -51,7 +51,7 @@ def withdraw_member(db: Session, club_id: str, target_user_id: str) -> None:
         raise ValueError("회장은 탈퇴 처리할 수 없습니다. 권한 이전 후 탈퇴해주세요.")
 
     member.status = "withdrawn"
-    member.left_at = datetime.utcnow()
+    member.left_at = utc_now_naive()
     db.commit()
 
 

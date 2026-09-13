@@ -2,9 +2,11 @@ from sqlalchemy import or_
 from sqlalchemy.orm import Session, selectinload, with_loader_criteria
 from src.models.club import Club, ClubActivityImage, ClubTag
 from src.models.club_member import ClubMember
+from src.models.club_admin import ClubAdmin
 from src.models.application import ApplicationAnswer, ApplicationForm, FormQuestion
 from src.models.user import User
 from src.schemas.club import ClubCreate, ClubUpdate, FormCreate, FormUpdate, QuestionCreate, QuestionUpdate
+from src.utils.storage import cleanup_pending_club_images, delete_managed_club_images
 
 
 def get_clubs(db: Session, search: str | None = None) -> list[Club]:
@@ -58,7 +60,7 @@ def get_active_form(db: Session, club_id: str) -> ApplicationForm | None:
                 include_aliases=True,
             ),
         )
-        .filter(ApplicationForm.club_id == club_id, ApplicationForm.is_active == True)
+        .filter(ApplicationForm.club_id == club_id, ApplicationForm.is_active.is_(True))
         .first()
     )
 
@@ -111,6 +113,24 @@ def _replace_activity_image_records(
 
 
 def create_club(db: Session, user: User, data: ClubCreate) -> Club:
+    # 허용 목록 행을 잠가 컨테이너가 여러 개여도 같은 관리자의 동시
+    # 동아리 생성 요청을 직렬화한다. DB의 부분 고유 인덱스가 최종 방어선이다.
+    designated_admin = (
+        db.query(ClubAdmin)
+        .filter(ClubAdmin.user_id == user.id)
+        .with_for_update()
+        .first()
+    )
+    if not designated_admin:
+        raise PermissionError("동아리 관리자 권한이 없습니다.")
+    existing_presidency = db.query(ClubMember.id).filter(
+        ClubMember.user_id == user.id,
+        ClubMember.role == "president",
+        ClubMember.status == "active",
+    ).first()
+    if existing_presidency:
+        raise ValueError("관리자 한 명은 하나의 동아리만 개설할 수 있습니다.")
+
     if db.query(Club).filter(Club.name == data.name).first():
         raise ValueError("이미 등록된 동아리 이름입니다.")
 
@@ -163,10 +183,21 @@ def create_club(db: Session, user: User, data: ClubCreate) -> Club:
 
     db.commit()
     db.refresh(club)
+    referenced_urls = {
+        url
+        for url in [club.image_url, *(club.activity_images or [])]
+        if isinstance(url, str) and url
+    }
+    cleanup_pending_club_images(user.id, referenced_urls)
     return club
 
 
 def update_club(db: Session, club: Club, data: ClubUpdate) -> Club:
+    old_image_urls = {
+        url
+        for url in [club.image_url, *(club.activity_images or [])]
+        if isinstance(url, str) and url
+    }
     if data.name is not None and data.name != club.name:
         if db.query(Club).filter(Club.name == data.name).first():
             raise ValueError("이미 등록된 동아리 이름입니다.")
@@ -217,6 +248,12 @@ def update_club(db: Session, club: Club, data: ClubUpdate) -> Club:
 
     db.commit()
     db.refresh(club)
+    new_image_urls = {
+        url
+        for url in [club.image_url, *(club.activity_images or [])]
+        if isinstance(url, str) and url
+    }
+    delete_managed_club_images(old_image_urls - new_image_urls)
     return club
 
 
@@ -225,7 +262,7 @@ def update_club(db: Session, club: Club, data: ClubUpdate) -> Club:
 def create_form(db: Session, club_id: str, data: FormCreate) -> ApplicationForm:
     existing = db.query(ApplicationForm).filter(
         ApplicationForm.club_id == club_id,
-        ApplicationForm.is_active == True,
+        ApplicationForm.is_active.is_(True),
     ).first()
     if existing:
         raise ValueError("이미 활성화된 신청 폼이 존재합니다.")
@@ -240,7 +277,7 @@ def create_form(db: Session, club_id: str, data: FormCreate) -> ApplicationForm:
 def update_form(db: Session, club_id: str, data: FormUpdate) -> ApplicationForm:
     form = db.query(ApplicationForm).filter(
         ApplicationForm.club_id == club_id,
-        ApplicationForm.is_active == True,
+        ApplicationForm.is_active.is_(True),
     ).first()
     if not form:
         raise LookupError("활성화된 신청 폼이 없습니다.")
@@ -256,7 +293,7 @@ def update_form(db: Session, club_id: str, data: FormUpdate) -> ApplicationForm:
 def add_question(db: Session, club_id: str, data: QuestionCreate) -> FormQuestion:
     form = db.query(ApplicationForm).filter(
         ApplicationForm.club_id == club_id,
-        ApplicationForm.is_active == True,
+        ApplicationForm.is_active.is_(True),
     ).first()
     if not form:
         raise LookupError("활성화된 신청 폼이 없습니다.")
@@ -333,7 +370,7 @@ def delete_question(db: Session, club_id: str, question_id: str) -> None:
 def reorder_questions(db: Session, club_id: str, question_ids: list[str]) -> ApplicationForm:
     form = db.query(ApplicationForm).filter(
         ApplicationForm.club_id == club_id,
-        ApplicationForm.is_active == True,
+        ApplicationForm.is_active.is_(True),
     ).first()
     if not form:
         raise LookupError("활성화된 신청 폼이 없습니다.")

@@ -1,4 +1,3 @@
-from datetime import datetime
 import json
 from sqlalchemy import or_
 from sqlalchemy.exc import IntegrityError
@@ -9,9 +8,11 @@ from src.models.club import Club
 from src.models.club_member import ClubMember
 from src.models.user import User
 from src.schemas.application import ApplicationCreate, ApplicationUpdate
+from src.utils.time import kst_today, utc_now_naive
 
 
 CLUB_PRESIDENT_APPLICATION_ERROR = "동아리 관리자는 본인 동아리에 신청할 수 없습니다."
+RECRUITMENT_CLOSED_ERROR = "모집이 마감된 동아리에는 지원할 수 없습니다."
 
 
 def _ensure_not_club_president(
@@ -29,6 +30,19 @@ def _ensure_not_club_president(
     )
     if membership:
         raise PermissionError(CLUB_PRESIDENT_APPLICATION_ERROR)
+
+
+def _ensure_club_is_recruiting(db: Session, club_id: str) -> None:
+    """관리자 토글과 한국 날짜 범위를 서버에서도 최종 검증한다."""
+    club = db.get(Club, club_id)
+    today = kst_today()
+    if (
+        not club
+        or not club.is_recruiting
+        or (club.recruit_start is not None and today < club.recruit_start)
+        or (club.recruit_end is not None and today > club.recruit_end)
+    ):
+        raise ValueError(RECRUITMENT_CLOSED_ERROR)
 
 
 def _to_list_dict(app: Application) -> dict:
@@ -184,13 +198,14 @@ def create_application(db: Session, user: User, data: ApplicationCreate) -> dict
         raise ValueError("존재하지 않거나 비활성화된 신청 폼입니다.")
 
     _ensure_not_club_president(db, user.id, form.club_id)
+    _ensure_club_is_recruiting(db, form.club_id)
 
     existing_submitted = (
         db.query(Application)
         .filter(
             Application.form_id == data.form_id,
             Application.user_id == user.id,
-            Application.is_draft == False,
+            Application.is_draft.is_(False),
         )
         .first()
     )
@@ -211,7 +226,7 @@ def create_application(db: Session, user: User, data: ApplicationCreate) -> dict
     _validate_answers(form.questions, data.answers, require_complete=not data.is_draft)
     applicant_snapshot = _applicant_snapshot(user, data)
 
-    now = datetime.utcnow()
+    now = utc_now_naive()
     app = Application(
         form_id=data.form_id,
         user_id=user.id,
@@ -267,6 +282,8 @@ def update_application(
         raise ValueError("이미 제출된 신청서는 수정할 수 없습니다.")
 
     submitting = data.is_draft is False
+    if submitting:
+        _ensure_club_is_recruiting(db, form.club_id)
     if submitting and not data.privacy_consent:
         raise ValueError("개인정보 수집 및 이용에 동의해주세요.")
     _validate_applicant_info(user, data)
@@ -294,7 +311,7 @@ def update_application(
                 question_id=ans.question_id,
                 answer_text=ans.answer_text,
             ))
-        app.updated_at = datetime.utcnow()
+        app.updated_at = utc_now_naive()
         db.flush()
         db.refresh(app)
 
@@ -314,7 +331,7 @@ def update_application(
         _validate_answers(form.questions, answers_to_check, require_complete=True)
         app.is_draft = False
         app.status = "submitted"
-        app.submitted_at = datetime.utcnow()
+        app.submitted_at = utc_now_naive()
         app.form_snapshot = _form_snapshot(form)
 
     db.commit()
@@ -352,7 +369,7 @@ def get_draft_applications(db: Session, user: User) -> list[dict]:
     apps = (
         db.query(Application)
         .options(selectinload(Application.form).selectinload(ApplicationForm.club))
-        .filter(Application.user_id == user.id, Application.is_draft == True)
+        .filter(Application.user_id == user.id, Application.is_draft.is_(True))
         .order_by(Application.updated_at.desc())
         .all()
     )
@@ -369,7 +386,7 @@ def get_draft_application(db: Session, user: User, application_id: str) -> dict 
         .filter(
             Application.id == application_id,
             Application.user_id == user.id,
-            Application.is_draft == True,
+            Application.is_draft.is_(True),
         )
         .first()
     )
@@ -380,7 +397,7 @@ def get_submitted_applications(db: Session, user: User) -> list[dict]:
     apps = (
         db.query(Application)
         .options(selectinload(Application.form).selectinload(ApplicationForm.club))
-        .filter(Application.user_id == user.id, Application.is_draft == False)
+        .filter(Application.user_id == user.id, Application.is_draft.is_(False))
         .order_by(Application.submitted_at.desc())
         .all()
     )
@@ -397,7 +414,7 @@ def get_submitted_application(db: Session, user: User, application_id: str) -> d
         .filter(
             Application.id == application_id,
             Application.user_id == user.id,
-            Application.is_draft == False,
+            Application.is_draft.is_(False),
         )
         .first()
     )
@@ -433,7 +450,7 @@ def _club_applications_query(
     query = (
         db.query(Application)
         .join(ApplicationForm, Application.form_id == ApplicationForm.id)
-        .filter(ApplicationForm.club_id == club_id, Application.is_draft == False)
+        .filter(ApplicationForm.club_id == club_id, Application.is_draft.is_(False))
     )
     if search and search.strip():
         pattern = f"%{search.strip()}%"
@@ -549,7 +566,7 @@ def get_club_application(db: Session, club_id: str, application_id: str) -> dict
         .filter(
             ApplicationForm.club_id == club_id,
             Application.id == application_id,
-            Application.is_draft == False,
+            Application.is_draft.is_(False),
         )
         .first()
     )
@@ -566,8 +583,9 @@ def update_application_status(db: Session, club_id: str, application_id: str, ne
         .filter(
             ApplicationForm.club_id == club_id,
             Application.id == application_id,
-            Application.is_draft == False,
+            Application.is_draft.is_(False),
         )
+        .with_for_update()
         .first()
     )
     if not app:
@@ -586,8 +604,7 @@ def update_application_status(db: Session, club_id: str, application_id: str, ne
         if not already:
             db.add(ClubMember(club_id=club_id, user_id=app.user_id, role="member", status="active"))
 
-    db.commit()
-    db.refresh(app)
+    db.flush()
     return app
 
 

@@ -2,6 +2,7 @@ from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
+from src.models.club import Club
 from src.db.session import get_db
 from src.core.dependencies import get_current_user, require_club_president
 from src.schemas.application import (
@@ -15,7 +16,7 @@ from src.schemas.application import (
     AdminApplicationListItem,
     AdminApplicationResponse,
 )
-from src.services import application_service, notification_service, club_service
+from src.services import application_service, notification_service
 from src.utils.pagination import Page
 
 router = APIRouter(tags=["applications"])
@@ -193,8 +194,11 @@ def update_application_status(
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
-    club = club_service.get_club(db, club_id)
-    notification_service.send_application_result(db, app.user_id, club.name, body.status)
+    # 상태·회원 등록·알림을 하나의 트랜잭션으로 커밋한다.
+    club_name = db.query(Club.name).filter(Club.id == club_id).scalar()
+    notification_service.queue_application_result(db, app.user_id, club_name, body.status)
+    db.commit()
+    db.refresh(app)
 
     return {
         "id": app.id,

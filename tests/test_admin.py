@@ -66,6 +66,23 @@ class TestClubCreate:
         ).first()
         assert membership is not None
 
+    def test_designated_admin_cannot_create_more_than_one_club(
+        self, client, designated_admin_headers
+    ):
+        first = client.post(
+            "/api/v1/clubs",
+            headers=designated_admin_headers,
+            json={"name": "첫번째동아리"},
+        )
+        second = client.post(
+            "/api/v1/clubs",
+            headers=designated_admin_headers,
+            json={"name": "두번째동아리"},
+        )
+        assert first.status_code == 201
+        assert second.status_code == 400
+        assert second.json()["detail"] == "관리자 한 명은 하나의 동아리만 개설할 수 있습니다."
+
 
 class TestClubUpdate:
     def test_update_success(self, client, setup):
@@ -417,6 +434,42 @@ class TestApplicationReview:
             Notification.noti_type == "application_result",
         ).first()
         assert noti is not None
+
+    def test_review_rolls_back_when_notification_cannot_be_queued(
+        self, client, db, setup, submitted_app
+    ):
+        from unittest.mock import patch
+        from src.models.application import Application
+
+        with patch(
+            "src.routers.v1.applications.notification_service.queue_application_result",
+            side_effect=RuntimeError("notification failure"),
+        ):
+            with pytest.raises(RuntimeError, match="notification failure"):
+                client.patch(
+                    f"/api/v1/clubs/{setup['club_id']}/applications/{submitted_app['id']}/status",
+                    headers=setup["president_headers"],
+                    json={"status": "passed"},
+                )
+
+        db.rollback()
+        db.expire_all()
+        saved = db.get(Application, submitted_app["id"])
+        assert saved.status == "submitted"
+
+    def test_admin_comment_is_committed(self, client, db, setup, submitted_app):
+        from src.models.application import Application
+
+        response = client.patch(
+            f"/api/v1/clubs/{setup['club_id']}/applications/{submitted_app['id']}/comment",
+            headers=setup["president_headers"],
+            json={"comment": "면접 시간을 확인해주세요."},
+        )
+        assert response.status_code == 200
+
+        db.expire_all()
+        saved = db.get(Application, submitted_app["id"])
+        assert saved.admin_comment == "면접 시간을 확인해주세요."
 
 
 # ── 게시판 CRUD ───────────────────────────────────────────────────────────────

@@ -71,6 +71,8 @@ uv run python scripts/verify_production_db.py
 DigitalOcean 컨테이너 2개에서 컨테이너별 `DB_POOL_SIZE=12`,
 `DB_MAX_OVERFLOW=8`을 사용할 경우 최대 백엔드 연결은 40개입니다.
 마이그레이션 `0021`은 `dreamlounge_backend` 역할 제한을 50개로 조정합니다.
+마이그레이션 `0022`는 브라우저 기기별 인증 요청 제한용 해시 컬럼과
+관리자 한 명당 하나의 활성 회장 동아리만 허용하는 DB 제약을 추가합니다.
 배포 후 SQL Editor에서 다음 쿼리 결과가 `50`인지 확인합니다.
 
 ```sql

@@ -20,6 +20,7 @@ from src.schemas.user import (
 )
 from src.services import auth_service
 from src.utils.client_ip import get_rate_limit_client_ip
+from src.utils.device import request_device_id
 from src.core.dependencies import bearer
 
 logger = logging.getLogger(__name__)
@@ -73,14 +74,25 @@ def _clear_session_cookies(response: Response) -> None:
     response.delete_cookie(REFRESH_COOKIE, path=_cookie_path("/api/v1/auth"))
 
 
+def _get_device_id(request: Request) -> str:
+    """공유 공인 IP 대신 브라우저 설치 단위를 구분하는 불투명 식별자."""
+    return request_device_id(request)
+
+
 @router.post("/register", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
-def register(body: UserCreate, request: Request, db: Session = Depends(get_db)):
+def register(
+    body: UserCreate,
+    request: Request,
+    response: Response,
+    db: Session = Depends(get_db),
+):
     """학번 + 8자 이상이며 특수문자를 포함한 비밀번호로 회원가입."""
     try:
         auth_service.enforce_registration_rate_limit(
             db,
             body.student_id,
             get_rate_limit_client_ip(request),
+            _get_device_id(request),
         )
         user = auth_service.register_user(db, body)
     except auth_service.RateLimitExceeded as e:
@@ -106,14 +118,17 @@ def register(body: UserCreate, request: Request, db: Session = Depends(get_db)):
 def login(body: LoginRequest, request: Request, response: Response, db: Session = Depends(get_db)):
     """학번 + 비밀번호 로그인 → JWT + 사용자 정보 반환."""
     client_ip = get_rate_limit_client_ip(request)
+    device_id = _get_device_id(request)
     try:
-        auth_service.enforce_login_rate_limit(db, body.student_id, client_ip)
+        auth_service.enforce_login_rate_limit(db, body.student_id, client_ip, device_id)
     except auth_service.RateLimitExceeded as e:
         raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail=str(e))
 
     user = auth_service.authenticate_user(db, body.student_id, body.password)
     if not user:
-        rate_limit_message = auth_service.record_login_failure(db, body.student_id, client_ip)
+        rate_limit_message = auth_service.record_login_failure(
+            db, student_id=body.student_id, client_ip=client_ip, device_id=device_id
+        )
         if rate_limit_message:
             raise HTTPException(
                 status_code=status.HTTP_429_TOO_MANY_REQUESTS,
@@ -128,7 +143,9 @@ def login(body: LoginRequest, request: Request, response: Response, db: Session 
         session = auth_service.create_supabase_session(db, user, body.password)
     except AuthApiError as e:
         if e.code == "invalid_credentials":
-            rate_limit_message = auth_service.record_login_failure(db, body.student_id, client_ip)
+            rate_limit_message = auth_service.record_login_failure(
+                db, student_id=body.student_id, client_ip=client_ip, device_id=device_id
+            )
             if rate_limit_message:
                 raise HTTPException(
                     status_code=status.HTTP_429_TOO_MANY_REQUESTS,
@@ -170,6 +187,12 @@ def refresh_session(
 ):
     """Supabase 또는 기존 자체 refresh token으로 세션을 재발급한다."""
     try:
+        device_id = _get_device_id(request)
+        auth_service.enforce_refresh_rate_limit(
+            db,
+            device_id=device_id,
+            client_ip=get_rate_limit_client_ip(request),
+        )
         supplied_refresh_token = (
             (body.refresh_token if body else None)
             or request.cookies.get(REFRESH_COOKIE)
@@ -189,6 +212,8 @@ def refresh_session(
             return TokenResponse(
                 user=_user_info(db, user),
             )
+    except auth_service.RateLimitExceeded as e:
+        raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail=str(e))
     except (ValueError, AuthApiError) as e:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(e))
     except Exception as e:

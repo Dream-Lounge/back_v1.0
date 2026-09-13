@@ -13,6 +13,7 @@ from src.core.security import hash_password, verify_password
 from src.models.club_member import ClubMember
 from src.models.user import User, PrivacyConsent, AuthRateLimit, AuthSession
 from src.schemas.user import UserCreate
+from src.utils.time import utc_now_naive
 from src.utils.supabase_client import (
     create_supabase_auth_client,
     get_supabase_admin_client,
@@ -61,6 +62,10 @@ def _rate_ip(ip: str | None) -> str | None:
     return _fingerprint(f"ip:{ip}") if ip else None
 
 
+def _rate_device(device_id: str | None) -> str | None:
+    return _fingerprint(f"device:{device_id}") if device_id else None
+
+
 def _find_auth_user_by_email(email: str):
     admin = get_supabase_admin_client().auth.admin
     for page in range(1, 101):
@@ -79,7 +84,8 @@ def _recent_event_count(
     subject: str,
     since: datetime,
     client_ip: str | None = None,
-) -> tuple[int, int]:
+    device_id: str | None = None,
+) -> tuple[int, int, int]:
     subject_hash = _rate_subject(action, subject)
     subject_count = db.query(AuthRateLimit).filter(
         AuthRateLimit.action == action,
@@ -94,35 +100,58 @@ def _recent_event_count(
             AuthRateLimit.ip_hash == ip_hash,
             AuthRateLimit.created_at >= since,
         ).count()
-    return subject_count, ip_count
+    device_count = 0
+    device_hash = _rate_device(device_id)
+    if device_hash:
+        device_count = db.query(AuthRateLimit).filter(
+            AuthRateLimit.action == action,
+            AuthRateLimit.device_hash == device_hash,
+            AuthRateLimit.created_at >= since,
+        ).count()
+    return subject_count, device_count, ip_count
 
 
-def _record_event(db: Session, action: str, subject: str, client_ip: str | None) -> None:
+def _record_event(
+    db: Session,
+    action: str,
+    subject: str,
+    client_ip: str | None,
+    device_id: str | None = None,
+) -> None:
     db.add(AuthRateLimit(
         action=action,
         subject_hash=_rate_subject(action, subject),
         ip_hash=_rate_ip(client_ip),
+        device_hash=_rate_device(device_id),
     ))
 
 
 def enforce_login_rate_limit(
-    db: Session, student_id: str, client_ip: str | None = None
+    db: Session,
+    student_id: str,
+    client_ip: str | None = None,
+    device_id: str | None = None,
 ) -> None:
-    since = datetime.utcnow() - timedelta(minutes=settings.LOGIN_LOCK_MINUTES)
-    subject_count, ip_count = _recent_event_count(
-        db, "login_failure", student_id, since, client_ip
+    since = utc_now_naive() - timedelta(minutes=settings.LOGIN_LOCK_MINUTES)
+    subject_count, device_count, ip_count = _recent_event_count(
+        db, "login_failure", student_id, since, client_ip, device_id
     )
     user = db.query(User).filter(User.student_id == student_id).first()
-    if user and user.locked_until and user.locked_until > datetime.utcnow():
+    if user and user.locked_until and user.locked_until > utc_now_naive():
         raise RateLimitExceeded(login_lock_message())
     if subject_count >= settings.LOGIN_MAX_ATTEMPTS:
         raise RateLimitExceeded(login_lock_message())
-    if ip_count >= settings.LOGIN_IP_MAX_ATTEMPTS:
+    if device_count >= settings.LOGIN_DEVICE_MAX_ATTEMPTS:
+        raise RateLimitExceeded("이 기기의 로그인 요청이 너무 많습니다. 잠시 후 다시 시도해주세요.")
+    if ip_count >= settings.LOGIN_NETWORK_MAX_ATTEMPTS:
         raise RateLimitExceeded(login_ip_rate_limit_message())
 
 
 def record_login_failure(
-    db: Session, student_id: str, client_ip: str | None = None
+    db: Session,
+    student_id: str,
+    client_ip: str | None = None,
+    device_id: str | None = None,
 ) -> str | None:
     user = (
         db.query(User)
@@ -130,23 +159,26 @@ def record_login_failure(
         .with_for_update()
         .first()
     )
-    _record_event(db, "login_failure", student_id, client_ip)
+    _record_event(db, "login_failure", student_id, client_ip, device_id)
     db.flush()
-    since = datetime.utcnow() - timedelta(minutes=settings.LOGIN_LOCK_MINUTES)
-    subject_count, ip_count = _recent_event_count(
-        db, "login_failure", student_id, since, client_ip
+    since = utc_now_naive() - timedelta(minutes=settings.LOGIN_LOCK_MINUTES)
+    subject_count, device_count, ip_count = _recent_event_count(
+        db, "login_failure", student_id, since, client_ip, device_id
     )
     is_locked = subject_count >= settings.LOGIN_MAX_ATTEMPTS
-    is_ip_limited = ip_count >= settings.LOGIN_IP_MAX_ATTEMPTS
+    is_device_limited = device_count >= settings.LOGIN_DEVICE_MAX_ATTEMPTS
+    is_ip_limited = ip_count >= settings.LOGIN_NETWORK_MAX_ATTEMPTS
     if user:
         user.failed_login_count = subject_count
         if is_locked:
-            user.locked_until = datetime.utcnow() + timedelta(
+            user.locked_until = utc_now_naive() + timedelta(
                 minutes=settings.LOGIN_LOCK_MINUTES
             )
     db.commit()
     if is_locked:
         return login_lock_message()
+    if is_device_limited:
+        return "이 기기의 로그인 요청이 너무 많습니다. 잠시 후 다시 시도해주세요."
     if is_ip_limited:
         return login_ip_rate_limit_message()
     return None
@@ -167,8 +199,8 @@ def clear_login_failures(db: Session, student_id: str) -> None:
 def enforce_image_upload_rate_limit(
     db: Session, user_id: str, client_ip: str | None = None
 ) -> None:
-    since = datetime.utcnow() - timedelta(hours=1)
-    subject_count, ip_count = _recent_event_count(
+    since = utc_now_naive() - timedelta(hours=1)
+    subject_count, _, ip_count = _recent_event_count(
         db, "image_upload", user_id, since, client_ip
     )
     if subject_count >= settings.IMAGE_UPLOAD_MAX_PER_HOUR or ip_count >= 100:
@@ -178,16 +210,42 @@ def enforce_image_upload_rate_limit(
 
 
 def enforce_registration_rate_limit(
-    db: Session, student_id: str, client_ip: str | None = None
+    db: Session,
+    student_id: str,
+    client_ip: str | None = None,
+    device_id: str | None = None,
 ) -> None:
-    """회원가입 요청을 학번과 IP 기준으로 제한한다."""
-    since = datetime.utcnow() - timedelta(hours=1)
-    subject_count, ip_count = _recent_event_count(
-        db, "registration_attempt", student_id, since, client_ip
+    """회원가입 요청을 학번·브라우저 기기·공인 IP 기준으로 제한한다."""
+    since = utc_now_naive() - timedelta(hours=1)
+    subject_count, device_count, ip_count = _recent_event_count(
+        db, "registration_attempt", student_id, since, client_ip, device_id
     )
-    if subject_count >= 5 or ip_count >= settings.REGISTRATION_IP_MAX_PER_HOUR:
+    if (
+        subject_count >= 5
+        or device_count >= settings.REGISTRATION_DEVICE_MAX_PER_HOUR
+        or ip_count >= settings.REGISTRATION_NETWORK_MAX_PER_HOUR
+    ):
         raise RateLimitExceeded("회원가입 요청이 너무 많습니다. 잠시 후 다시 시도해주세요.")
-    _record_event(db, "registration_attempt", student_id, client_ip)
+    _record_event(db, "registration_attempt", student_id, client_ip, device_id)
+    db.commit()
+
+
+def enforce_refresh_rate_limit(
+    db: Session,
+    device_id: str,
+    client_ip: str | None = None,
+) -> None:
+    """세션 갱신 폭주를 기기 중심으로 제한하고 IP는 넓은 안전망으로 둔다."""
+    since = utc_now_naive() - timedelta(minutes=10)
+    _, device_count, ip_count = _recent_event_count(
+        db, "session_refresh", device_id, since, client_ip, device_id
+    )
+    if (
+        device_count >= settings.REFRESH_DEVICE_MAX_PER_10_MINUTES
+        or ip_count >= settings.REFRESH_IP_MAX_PER_10_MINUTES
+    ):
+        raise RateLimitExceeded("세션 갱신 요청이 너무 많습니다. 잠시 후 다시 시도해주세요.")
+    _record_event(db, "session_refresh", device_id, client_ip, device_id)
     db.commit()
 
 
@@ -262,7 +320,7 @@ def _refresh_token_digest(token: str) -> str:
 
 def create_local_session(db: Session, user: User) -> str:
     """불투명 refresh token을 만들고 HMAC 해시만 DB에 저장한다."""
-    now = datetime.utcnow()
+    now = utc_now_naive()
     db.query(AuthSession).filter(
         (AuthSession.expires_at <= now) | (AuthSession.revoked_at.is_not(None))
     ).delete(synchronize_session=False)
@@ -294,7 +352,7 @@ def create_local_session(db: Session, user: User) -> str:
 
 def rotate_local_session(db: Session, refresh_token: str) -> tuple[str, User]:
     """refresh token을 한 번만 사용하도록 원자적으로 폐기하고 교체한다."""
-    now = datetime.utcnow()
+    now = utc_now_naive()
     session = (
         db.query(AuthSession)
         .filter(AuthSession.token_hash == _refresh_token_digest(refresh_token))
@@ -338,7 +396,7 @@ def revoke_local_session(db: Session, user_id: str, refresh_token: str) -> None:
         .first()
     )
     if session:
-        session.revoked_at = datetime.utcnow()
+        session.revoked_at = utc_now_naive()
         db.commit()
 
 
@@ -482,7 +540,7 @@ def withdraw_user(db: Session, user: User) -> None:
     if active_presidency:
         raise PermissionError(ACTIVE_PRESIDENT_WITHDRAWAL_ERROR)
 
-    withdrawn_at = datetime.utcnow()
+    withdrawn_at = utc_now_naive()
     active_memberships = db.query(ClubMember).filter(
         ClubMember.user_id == user.id,
         ClubMember.status == "active",

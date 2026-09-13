@@ -6,6 +6,7 @@ from sqlalchemy import text
 from src.core.config import settings
 from src.db.session import engine
 from src.routers.v1.router import router as v1_router
+from src.utils.device import DEVICE_COOKIE, resolve_device_id
 
 
 @asynccontextmanager
@@ -32,6 +33,26 @@ app.add_middleware(
 )
 
 app.include_router(v1_router, prefix="/api/v1")
+
+
+@app.middleware("http")
+async def ensure_device_cookie(request: Request, call_next):
+    """공유 NAT와 무관한 요청 제한용 기기 쿠키를 오류 응답에도 유지한다."""
+    device_id, is_new = resolve_device_id(request)
+    request.state.device_id = device_id
+    response = await call_next(request)
+    if is_new:
+        prefix = settings.COOKIE_PATH_PREFIX
+        response.set_cookie(
+            DEVICE_COOKIE,
+            device_id,
+            max_age=365 * 24 * 60 * 60,
+            httponly=True,
+            secure=settings.ENVIRONMENT.lower() == "production",
+            samesite="lax",
+            path=f"{prefix}/" if prefix else "/",
+        )
+    return response
 
 
 @app.middleware("http")

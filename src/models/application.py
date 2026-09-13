@@ -4,6 +4,7 @@ from datetime import datetime
 from sqlalchemy import String, Boolean, Text, Integer, DateTime, ForeignKey, JSON, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from src.db.base import Base, TimestampMixin
+from src.utils.time import utc_now_naive
 
 
 class ApplicationForm(TimestampMixin, Base):
@@ -64,7 +65,7 @@ class Application(Base):
     # 이미 제출된 지원서의 질문과 선택지는 바뀌지 않는다.
     form_snapshot: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False
+        DateTime, default=utc_now_naive, onupdate=utc_now_naive, nullable=False
     )
 
     form = relationship("ApplicationForm", back_populates="applications")

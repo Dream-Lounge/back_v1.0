@@ -26,6 +26,19 @@ def app_setup(client, db, auth_headers, seeded_club):
 # ── 신청서 생성 ────────────────────────────────────────────────────────────────
 
 class TestCreateApplication:
+    def test_cannot_create_application_when_recruitment_is_closed(
+        self, client, db, app_setup, seeded_club
+    ):
+        seeded_club["club"].is_recruiting = False
+        db.commit()
+        response = client.post("/api/v1/applications", headers=app_setup["headers"], json={
+            "form_id": app_setup["form_id"],
+            "is_draft": True,
+            "answers": [],
+        })
+        assert response.status_code == 400
+        assert response.json()["detail"] == "모집이 마감된 동아리에는 지원할 수 없습니다."
+
     @pytest.mark.parametrize("is_draft", [True, False])
     def test_club_president_cannot_create_application(
         self, client, app_setup, president_headers, is_draft
@@ -212,6 +225,24 @@ class TestUpdateApplication:
         assert data["is_draft"] is False
         assert data["status"] == "submitted"
         assert data["submitted_at"] is not None
+
+    def test_cannot_submit_draft_after_recruitment_closes(
+        self, client, db, app_setup, seeded_club
+    ):
+        app_id = self._create_draft(client, app_setup)
+        seeded_club["club"].is_recruiting = False
+        db.commit()
+        response = client.patch(
+            f"/api/v1/applications/{app_id}",
+            headers=app_setup["headers"],
+            json={
+                **APPLICANT,
+                "is_draft": False,
+                "answers": [{"question_id": app_setup["question_id"], "answer_text": "최종 답변"}],
+            },
+        )
+        assert response.status_code == 400
+        assert response.json()["detail"] == "모집이 마감된 동아리에는 지원할 수 없습니다."
 
     def test_cannot_update_submitted(self, client, app_setup):
         resp = client.post("/api/v1/applications", headers=app_setup["headers"], json={

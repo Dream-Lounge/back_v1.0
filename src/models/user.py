@@ -4,6 +4,7 @@ from datetime import datetime
 from sqlalchemy import String, Boolean, DateTime, ForeignKey, Integer, Index
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from src.db.base import Base, TimestampMixin
+from src.utils.time import utc_now_naive
 
 
 class User(TimestampMixin, Base):
@@ -42,7 +43,7 @@ class PrivacyConsent(Base):
     user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), nullable=False)
     required_agreed: Mapped[bool] = mapped_column(Boolean, nullable=False)
     optional_agreed: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
-    agreed_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    agreed_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now_naive, nullable=False)
 
     user = relationship("User", back_populates="privacy_consent")
 
@@ -52,6 +53,7 @@ class AuthRateLimit(Base):
     __table_args__ = (
         Index("ix_auth_rate_limits_lookup", "action", "subject_hash", "created_at"),
         Index("ix_auth_rate_limits_ip_lookup", "action", "ip_hash", "created_at"),
+        Index("ix_auth_rate_limits_device_lookup", "action", "device_hash", "created_at"),
         Index("ix_auth_rate_limits_created_at", "created_at"),
     )
 
@@ -59,7 +61,8 @@ class AuthRateLimit(Base):
     action: Mapped[str] = mapped_column(String(30), nullable=False)
     subject_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     ip_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    device_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now_naive, nullable=False)
 
 
 class AuthSession(Base):
@@ -75,7 +78,7 @@ class AuthSession(Base):
     )
     token_hash: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
     expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now_naive, nullable=False)
     last_used_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 

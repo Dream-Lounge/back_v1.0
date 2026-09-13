@@ -38,11 +38,15 @@ class Settings(BaseSettings):
     COOKIE_PATH_PREFIX: str = ""
 
     LOGIN_MAX_ATTEMPTS: int = 5
-    LOGIN_LOCK_MINUTES: int = 15
-    # 교내 NAT/프록시처럼 여러 사용자가 하나의 IP를 공유하는 환경을 고려한다.
-    # 개별 학번은 LOGIN_MAX_ATTEMPTS로 별도 제한한다.
-    LOGIN_IP_MAX_ATTEMPTS: int = 500
-    REGISTRATION_IP_MAX_PER_HOUR: int = 500
+    LOGIN_LOCK_MINUTES: int = 10
+    # 브라우저 기기 쿠키를 주 제한으로 사용하고, 공인 IP는 NAT 환경을 고려해
+    # 훨씬 넓은 비정상 트래픽 안전망으로만 사용한다.
+    LOGIN_DEVICE_MAX_ATTEMPTS: int = 500
+    LOGIN_NETWORK_MAX_ATTEMPTS: int = 5000
+    REGISTRATION_DEVICE_MAX_PER_HOUR: int = 500
+    REGISTRATION_NETWORK_MAX_PER_HOUR: int = 5000
+    REFRESH_DEVICE_MAX_PER_10_MINUTES: int = 60
+    REFRESH_IP_MAX_PER_10_MINUTES: int = 5000
     IMAGE_UPLOAD_MAX_PER_HOUR: int = 20
     TRUST_PROXY_HEADERS: bool = False
     TRUSTED_PROXY_CIDRS: str = "[]"
