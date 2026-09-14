@@ -149,6 +149,27 @@ class TestClubUpdate:
         assert resp.status_code == 200
         assert resp.json()["description"] == "수정된 설명"
 
+    def test_update_accepts_tagline_up_to_2000_characters(self, client, setup):
+        tagline = "가" * 2000
+
+        resp = client.patch(
+            f"/api/v1/clubs/{setup['club_id']}",
+            headers=setup["president_headers"],
+            json={"tagline": tagline},
+        )
+
+        assert resp.status_code == 200
+        assert resp.json()["tagline"] == tagline
+
+    def test_update_rejects_tagline_over_2000_characters(self, client, setup):
+        resp = client.patch(
+            f"/api/v1/clubs/{setup['club_id']}",
+            headers=setup["president_headers"],
+            json={"tagline": "가" * 2001},
+        )
+
+        assert resp.status_code == 422
+
     def test_update_tags(self, client, setup):
         resp = client.patch(f"/api/v1/clubs/{setup['club_id']}", headers=setup["president_headers"], json={
             "tags": [{"tag_key": "분위기", "tag_value": "활발"}],
