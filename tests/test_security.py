@@ -74,6 +74,25 @@ def test_active_president_retains_admin_api_access_without_allowlist(
     assert response.status_code == 200
 
 
+def test_allowlisted_non_president_does_not_gain_admin_access(
+    client, db, auth_headers
+):
+    user = db.query(User).filter(User.student_id == "2021000001").one()
+    db.add(ClubAdmin(user_id=user.id, note="회장이 아닌 지정 사용자"))
+    db.commit()
+
+    me_response = client.get("/api/v1/auth/me", headers=auth_headers)
+    create_response = client.post(
+        "/api/v1/clubs",
+        headers=auth_headers,
+        json={"name": "권한없는신규동아리"},
+    )
+
+    assert me_response.status_code == 200
+    assert me_response.json()["is_club_admin"] is False
+    assert create_response.status_code == 403
+
+
 def test_simple_logout_does_not_call_supabase(client, auth_headers):
     with patch("src.routers.v1.auth.auth_service.revoke_supabase_session") as revoke:
         response = client.post("/api/v1/auth/logout", headers=auth_headers)

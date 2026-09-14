@@ -8,10 +8,7 @@ from sqlalchemy.orm import sessionmaker
 # 테스트가 개발/운영 .env의 Supabase Auth 사용자를 생성하거나 삭제하지 않도록
 # 애플리케이션 설정이 로드되기 전에 외부 Auth 연동을 비활성화한다.
 os.environ["SUPABASE_SERVICE_KEY"] = ""
-os.environ["ALLOW_SELF_SERVICE_CLUB_ADMIN"] = "False"
-
 from src.main import app
-from src.core import config as app_config
 from src.db.base import Base
 from src.db.session import get_db
 
@@ -19,13 +16,6 @@ TEST_DATABASE_URL = "sqlite:///./test.db"
 
 engine = create_engine(TEST_DATABASE_URL, connect_args={"check_same_thread": False})
 TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-
-
-@pytest.fixture(autouse=True)
-def disable_forced_admin_onboarding(monkeypatch):
-    """권한 테스트는 운영의 닫힌 기본 상태에서 실행한다."""
-    monkeypatch.setattr(app_config, "FORCE_SELF_SERVICE_CLUB_ADMIN_OPEN", False)
-
 
 @pytest.fixture(scope="session", autouse=True)
 def setup_db():

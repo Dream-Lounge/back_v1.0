@@ -1,3 +1,6 @@
+from unittest.mock import patch
+
+
 class TestListClubs:
     def test_returns_all_clubs_without_search(self, client, seeded_club):
         resp = client.get("/api/v1/clubs")
@@ -137,11 +140,12 @@ class TestClubActivityImages:
             },
         ]
 
-        resp = client.post(
-            "/api/v1/clubs",
-            headers=designated_admin_headers,
-            json={"name": "사진설명동아리", "activity_image_details": details},
-        )
+        with patch("src.core.config.FORCE_SELF_SERVICE_CLUB_ADMIN_OPEN", True):
+            resp = client.post(
+                "/api/v1/clubs",
+                headers=designated_admin_headers,
+                json={"name": "사진설명동아리", "activity_image_details": details},
+            )
 
         assert resp.status_code == 201
         assert resp.json()["activity_images"] == [item["image_url"] for item in details]

@@ -4,7 +4,6 @@ from unittest.mock import patch
 import pytest
 
 from tests.conftest import register_and_login
-from src.core.config import settings
 
 
 # ── 공통 셋업 픽스처 ──────────────────────────────────────────────────────────
@@ -31,7 +30,7 @@ class TestClubCreate:
         from src.models.club_admin import ClubAdmin
         from src.models.user import User
 
-        with patch.object(settings, "ALLOW_SELF_SERVICE_CLUB_ADMIN", True):
+        with patch("src.core.config.FORCE_SELF_SERVICE_CLUB_ADMIN_OPEN", True):
             opened = client.get("/api/v1/auth/me", headers=auth_headers)
             created = client.post(
                 "/api/v1/clubs",
@@ -52,7 +51,7 @@ class TestClubCreate:
     def test_self_service_onboarding_does_not_persist_non_creator(
         self, client, auth_headers
     ):
-        with patch.object(settings, "ALLOW_SELF_SERVICE_CLUB_ADMIN", True):
+        with patch("src.core.config.FORCE_SELF_SERVICE_CLUB_ADMIN_OPEN", True):
             opened = client.get("/api/v1/auth/me", headers=auth_headers)
         closed = client.get("/api/v1/auth/me", headers=auth_headers)
 
@@ -65,7 +64,7 @@ class TestClubCreate:
         from src.models.club_admin import ClubAdmin
         from src.models.user import User
 
-        with patch.object(settings, "ALLOW_SELF_SERVICE_CLUB_ADMIN", True):
+        with patch("src.core.config.FORCE_SELF_SERVICE_CLUB_ADMIN_OPEN", True):
             response = client.post(
                 "/api/v1/clubs",
                 headers=auth_headers,
@@ -78,22 +77,24 @@ class TestClubCreate:
         assert db.get(ClubAdmin, user.id) is None
 
     def test_create_success(self, client, db, designated_admin_headers):
-        resp = client.post("/api/v1/clubs", headers=designated_admin_headers, json={
-            "name": "새동아리",
-            "club_type": "central",
-            "description": "설명",
-            "is_recruiting": True,
-            "tags": [{"tag_key": "분야", "tag_value": "음악"}],
-        })
+        with patch("src.core.config.FORCE_SELF_SERVICE_CLUB_ADMIN_OPEN", True):
+            resp = client.post("/api/v1/clubs", headers=designated_admin_headers, json={
+                "name": "새동아리",
+                "club_type": "central",
+                "description": "설명",
+                "is_recruiting": True,
+                "tags": [{"tag_key": "분야", "tag_value": "음악"}],
+            })
         assert resp.status_code == 201
         data = resp.json()
         assert data["name"] == "새동아리"
         assert len(data["tags"]) == 1
 
     def test_create_duplicate_name(self, client, designated_admin_headers, seeded_club):
-        resp = client.post("/api/v1/clubs", headers=designated_admin_headers, json={
-            "name": seeded_club["club"].name,
-        })
+        with patch("src.core.config.FORCE_SELF_SERVICE_CLUB_ADMIN_OPEN", True):
+            resp = client.post("/api/v1/clubs", headers=designated_admin_headers, json={
+                "name": seeded_club["club"].name,
+            })
         assert resp.status_code == 400
 
     def test_create_requires_auth(self, client):
@@ -105,13 +106,14 @@ class TestClubCreate:
             "/api/v1/clubs", headers=auth_headers, json={"name": "권한없는동아리"}
         )
         assert resp.status_code == 403
-        assert "지정된 동아리 관리자" in resp.json()["detail"]
+        assert "동아리 회장" in resp.json()["detail"]
 
     def test_creator_becomes_president(self, client, db, designated_admin_headers):
         from src.models.user import User
         from src.models.club_member import ClubMember
 
-        resp = client.post("/api/v1/clubs", headers=designated_admin_headers, json={"name": "내동아리"})
+        with patch("src.core.config.FORCE_SELF_SERVICE_CLUB_ADMIN_OPEN", True):
+            resp = client.post("/api/v1/clubs", headers=designated_admin_headers, json={"name": "내동아리"})
         club_id = resp.json()["id"]
 
         user = db.query(User).filter(User.student_id == "2021000001").first()
@@ -125,16 +127,17 @@ class TestClubCreate:
     def test_designated_admin_cannot_create_more_than_one_club(
         self, client, designated_admin_headers
     ):
-        first = client.post(
-            "/api/v1/clubs",
-            headers=designated_admin_headers,
-            json={"name": "첫번째동아리"},
-        )
-        second = client.post(
-            "/api/v1/clubs",
-            headers=designated_admin_headers,
-            json={"name": "두번째동아리"},
-        )
+        with patch("src.core.config.FORCE_SELF_SERVICE_CLUB_ADMIN_OPEN", True):
+            first = client.post(
+                "/api/v1/clubs",
+                headers=designated_admin_headers,
+                json={"name": "첫번째동아리"},
+            )
+            second = client.post(
+                "/api/v1/clubs",
+                headers=designated_admin_headers,
+                json={"name": "두번째동아리"},
+            )
         assert first.status_code == 201
         assert second.status_code == 400
         assert second.json()["detail"] == "관리자 한 명은 하나의 동아리만 개설할 수 있습니다."
@@ -192,11 +195,12 @@ class TestClubUpdate:
         other_user = db.query(User).filter(User.student_id == "2021999998").one()
         db.add(ClubAdmin(user_id=other_user.id, note="다른 테스트 관리자"))
         db.commit()
-        own_club = client.post(
-            "/api/v1/clubs",
-            headers=other_headers,
-            json={"name": "다른관리자동아리"},
-        )
+        with patch("src.core.config.FORCE_SELF_SERVICE_CLUB_ADMIN_OPEN", True):
+            own_club = client.post(
+                "/api/v1/clubs",
+                headers=other_headers,
+                json={"name": "다른관리자동아리"},
+            )
         assert own_club.status_code == 201
 
         resp = client.patch(

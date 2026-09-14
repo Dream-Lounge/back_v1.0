@@ -41,9 +41,12 @@ def test_removed_managed_image_is_deleted_from_storage():
 
 
 class TestImageUpload:
-    def test_designated_admin_can_upload_before_club_creation(self, client, designated_admin_headers):
+    def test_onboarding_user_can_upload_before_club_creation(self, client, designated_admin_headers):
         storage = _mock_supabase()
-        with patch("src.utils.storage.get_supabase_admin_client", return_value=storage):
+        with (
+            patch("src.core.config.FORCE_SELF_SERVICE_CLUB_ADMIN_OPEN", True),
+            patch("src.utils.storage.get_supabase_admin_client", return_value=storage),
+        ):
             resp = client.post(
                 "/api/v1/clubs/images",
                 headers=designated_admin_headers,

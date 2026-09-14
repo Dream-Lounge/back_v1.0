@@ -5,9 +5,9 @@ from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings
 from sqlalchemy.engine import make_url
 
-# 환경변수를 수정할 수 없는 회장 온보딩 기간에만 사용하는 코드 스위치다.
-# 온보딩 종료 후 False로 바꾸고 재배포한다.
-FORCE_SELF_SERVICE_CLUB_ADMIN_OPEN = True
+# 동아리 회장 온보딩이 종료되어 일반 회원의 관리자 접근을 닫는다.
+# 기존 active president 관계는 그대로 유지되므로 회장은 계속 관리할 수 있다.
+FORCE_SELF_SERVICE_CLUB_ADMIN_OPEN = False
 
 
 class Settings(BaseSettings):
@@ -28,10 +28,6 @@ class Settings(BaseSettings):
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
     REFRESH_TOKEN_EXPIRE_DAYS: int = 14
     MAX_ACTIVE_SESSIONS_PER_USER: int = 5
-    # 동아리 회장 온보딩 기간에만 활성화한다. 활성화 중에는 가입자 모두가
-    # 관리자 화면에 접근할 수 있으며, 동아리를 만든 계정은 회장 관계로 보존된다.
-    ALLOW_SELF_SERVICE_CLUB_ADMIN: bool = False
-
     SUPABASE_URL: str = ""
     SUPABASE_ANON_KEY: str = ""
     SUPABASE_SERVICE_KEY: str = ""
@@ -131,5 +127,5 @@ settings = Settings()
 
 
 def is_self_service_club_admin_open() -> bool:
-    """코드 임시 스위치가 켜졌거나 환경변수로 허용한 경우 온보딩을 연다."""
-    return FORCE_SELF_SERVICE_CLUB_ADMIN_OPEN or settings.ALLOW_SELF_SERVICE_CLUB_ADMIN
+    """코드에서 명시적으로 허용한 회장 온보딩 기간에만 개방한다."""
+    return FORCE_SELF_SERVICE_CLUB_ADMIN_OPEN

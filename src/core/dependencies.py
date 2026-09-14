@@ -74,13 +74,10 @@ def get_current_user(
 
 
 def is_designated_club_admin(db: Session, user_id: str) -> bool:
-    """온보딩 개방 대상, 지정 관리자 또는 현직 회장인지 확인한다."""
-    from src.models.club_admin import ClubAdmin
+    """온보딩 개방 대상 또는 현직 회장인지 확인한다."""
     from src.models.club_member import ClubMember
 
     if is_self_service_club_admin_open():
-        return True
-    if db.query(ClubAdmin.user_id).filter(ClubAdmin.user_id == user_id).first() is not None:
         return True
     return db.query(ClubMember.id).filter(
         ClubMember.user_id == user_id,
@@ -90,11 +87,11 @@ def is_designated_club_admin(db: Session, user_id: str) -> bool:
 
 
 def require_club_admin(current_user=Depends(get_current_user), db: Session = Depends(get_db)):
-    """온보딩 개방 대상 또는 운영자가 지정한 동아리 관리자만 통과시킨다."""
+    """온보딩 개방 대상 또는 현직 동아리 회장만 통과시킨다."""
     if not is_designated_club_admin(db, current_user.id):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="지정된 동아리 관리자만 접근할 수 있습니다.",
+            detail="동아리 회장만 접근할 수 있습니다.",
         )
     return current_user
 
