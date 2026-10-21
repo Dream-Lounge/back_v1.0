@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 from src.models.club import Club
 from src.db.session import get_db
-from src.core.dependencies import get_current_user, require_club_president
+from src.core.dependencies import get_current_user, require_club_manager
 from src.schemas.application import (
     ApplicationCreate,
     ApplicationUpdate,
@@ -135,7 +135,7 @@ def list_club_applications(
         None, alias="status"
     ),
     db: Session = Depends(get_db),
-    current_user=Depends(require_club_president),
+    current_user=Depends(require_club_manager),
 ):
     """제출된 신청서 목록 조회 (회장 전용)."""
     return application_service.get_club_applications(
@@ -156,7 +156,7 @@ def export_club_applications(
         None, alias="status"
     ),
     db: Session = Depends(get_db),
-    current_user=Depends(require_club_president),
+    current_user=Depends(require_club_manager),
 ):
     """엑셀 생성용 신청서 상세 일괄 조회 (회장 전용)."""
     return application_service.get_club_applications_export(
@@ -169,7 +169,7 @@ def get_club_application(
     club_id: str,
     application_id: str,
     db: Session = Depends(get_db),
-    current_user=Depends(require_club_president),
+    current_user=Depends(require_club_manager),
 ):
     """신청서 상세 조회 (회장 전용)."""
     result = application_service.get_club_application(db, club_id, application_id)
@@ -184,7 +184,7 @@ def update_application_status(
     application_id: str,
     body: ApplicationStatusUpdate,
     db: Session = Depends(get_db),
-    current_user=Depends(require_club_president),
+    current_user=Depends(require_club_manager),
 ):
     """심사 결과 업데이트 — pending(보류) / passed(합격) / failed(불합격) (회장 전용)."""
     try:
@@ -224,7 +224,7 @@ def update_application_comment(
     application_id: str,
     body: ApplicationCommentUpdate,
     db: Session = Depends(get_db),
-    current_user=Depends(require_club_president),
+    current_user=Depends(require_club_manager),
 ):
     """해당 동아리 신청서의 관리자 코멘트를 저장한다 (회장 전용)."""
     try:

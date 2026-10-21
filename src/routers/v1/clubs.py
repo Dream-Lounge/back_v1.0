@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query, 
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from src.db.session import get_db
-from src.core.dependencies import require_club_admin, require_club_president
+from src.core.dependencies import require_club_admin, require_club_manager
 from src.schemas.club import (
     ClubCreate, ClubUpdate, ClubResponse,
     ApplicationFormResponse, FormCreate, FormUpdate,
@@ -53,7 +53,7 @@ async def upload_image(
     club_id: str,
     request: Request,
     file: UploadFile = File(...),
-    current_user=Depends(require_club_president),
+    current_user=Depends(require_club_manager),
     db: Session = Depends(get_db),
 ):
     """동아리 이미지 업로드 (해당 동아리 회장 전용)."""
@@ -125,7 +125,7 @@ def update_club(
     club_id: str,
     body: ClubUpdate,
     db: Session = Depends(get_db),
-    current_user=Depends(require_club_president),
+    current_user=Depends(require_club_manager),
 ):
     """동아리 정보 수정 (회장 전용)."""
     club = club_service.get_club(db, club_id)
@@ -144,7 +144,7 @@ def create_form(
     club_id: str,
     body: FormCreate,
     db: Session = Depends(get_db),
-    current_user=Depends(require_club_president),
+    current_user=Depends(require_club_manager),
 ):
     """신청 폼 생성 (회장 전용)."""
     try:
@@ -158,7 +158,7 @@ def update_form(
     club_id: str,
     body: FormUpdate,
     db: Session = Depends(get_db),
-    current_user=Depends(require_club_president),
+    current_user=Depends(require_club_manager),
 ):
     """신청 폼 제목/활성 상태 수정 (회장 전용)."""
     try:
@@ -172,7 +172,7 @@ def add_question(
     club_id: str,
     body: QuestionCreate,
     db: Session = Depends(get_db),
-    current_user=Depends(require_club_president),
+    current_user=Depends(require_club_manager),
 ):
     """질문 추가 (회장 전용)."""
     try:
@@ -187,7 +187,7 @@ def update_question(
     question_id: str,
     body: QuestionUpdate,
     db: Session = Depends(get_db),
-    current_user=Depends(require_club_president),
+    current_user=Depends(require_club_manager),
 ):
     """질문 수정 (회장 전용)."""
     try:
@@ -203,7 +203,7 @@ def delete_question(
     club_id: str,
     question_id: str,
     db: Session = Depends(get_db),
-    current_user=Depends(require_club_president),
+    current_user=Depends(require_club_manager),
 ):
     """질문 삭제 (회장 전용)."""
     try:
@@ -217,7 +217,7 @@ def reorder_questions(
     club_id: str,
     body: QuestionReorderRequest,
     db: Session = Depends(get_db),
-    current_user=Depends(require_club_president),
+    current_user=Depends(require_club_manager),
 ):
     """질문 순서 변경 (회장 전용). question_ids에 원하는 순서대로 질문 ID를 담아 보내세요."""
     try:

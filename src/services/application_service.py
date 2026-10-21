@@ -23,7 +23,7 @@ def _ensure_not_club_president(
         .filter(
             ClubMember.club_id == club_id,
             ClubMember.user_id == user_id,
-            ClubMember.role == "president",
+            ClubMember.role.in_(("president", "admin")),
             ClubMember.status == "active",
         )
         .first()

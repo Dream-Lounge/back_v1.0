@@ -45,6 +45,37 @@ def test_supabase_access_token_is_verified_locally(client, db):
     remote_client.assert_not_called()
 
 
+def test_unverified_real_email_cannot_use_supabase_access_token(client, db):
+    user = User(
+        auth_user_id="00000000-0000-0000-0000-000000000778",
+        student_id="2021777778",
+        password_hash=hash_password("Password1!"),
+        name="미인증사용자",
+        email="unverified@example.com",
+        email_verified=False,
+    )
+    db.add(user)
+    db.commit()
+
+    with (
+        patch(
+            "src.core.dependencies.decode_access_token",
+            side_effect=JWTError("not a local token"),
+        ),
+        patch(
+            "src.core.dependencies.decode_supabase_access_token",
+            return_value={"sub": user.auth_user_id},
+        ),
+    ):
+        response = client.get(
+            "/api/v1/auth/me",
+            headers={"Authorization": "Bearer unverified-token"},
+        )
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == "이메일 인증을 완료해주세요."
+
+
 def test_user_info_exposes_only_operator_designated_admin_status(
     client, auth_headers, president_headers
 ):
@@ -103,24 +134,33 @@ def test_simple_logout_does_not_call_supabase(client, auth_headers):
 
 def test_registration_creates_auth_user_without_listing_all_users(db):
     admin_client = MagicMock()
+    auth_client = MagicMock()
     created_user = MagicMock()
     created_user.id = "00000000-0000-0000-0000-000000000123"
     created = MagicMock()
     created.user = created_user
-    admin_client.auth.admin.create_user.return_value = created
+    created.session = None
+    auth_client.auth.sign_up.return_value = created
 
     with (
         patch.object(settings, "SUPABASE_SERVICE_KEY", "test-secret"),
+        patch.object(settings, "SUPABASE_ANON_KEY", "test-publishable"),
+        patch("src.services.auth_service.create_supabase_auth_client", return_value=auth_client),
         patch("src.services.auth_service.get_supabase_admin_client", return_value=admin_client),
     ):
         user = auth_service.register_user(
             db,
-            auth_service.UserCreate(student_id="2021999999", name="보안테스트", password="test1234!"),
+            auth_service.UserCreate(
+                student_id="2021999999",
+                name="보안테스트",
+                email="security@example.com",
+                password="test1234!",
+            ),
         )
 
     assert user.auth_user_id == str(created_user.id)
-    admin_client.auth.admin.create_user.assert_called_once()
-    assert admin_client.auth.admin.create_user.call_args.args[0]["app_metadata"] == {
+    auth_client.auth.sign_up.assert_called_once()
+    assert auth_client.auth.sign_up.call_args.args[0]["options"]["data"] == {
         "student_id": "2021999999",
         "name": "보안테스트",
     }
@@ -128,24 +168,30 @@ def test_registration_creates_auth_user_without_listing_all_users(db):
 
 
 def test_registration_releases_db_connection_before_auth_request(db):
-    admin_client = MagicMock()
+    auth_client = MagicMock()
     created_user = MagicMock()
     created_user.id = "00000000-0000-0000-0000-000000000124"
-    created = MagicMock(user=created_user)
+    created = MagicMock(user=created_user, session=None)
 
-    def create_user(_payload):
+    def sign_up(_payload):
         assert not db.in_transaction()
         return created
 
-    admin_client.auth.admin.create_user.side_effect = create_user
+    auth_client.auth.sign_up.side_effect = sign_up
 
     with (
         patch.object(settings, "SUPABASE_SERVICE_KEY", "test-secret"),
-        patch("src.services.auth_service.get_supabase_admin_client", return_value=admin_client),
+        patch.object(settings, "SUPABASE_ANON_KEY", "test-publishable"),
+        patch("src.services.auth_service.create_supabase_auth_client", return_value=auth_client),
     ):
         user = auth_service.register_user(
             db,
-            auth_service.UserCreate(student_id="2021999998", name="연결테스트", password="test1234!"),
+            auth_service.UserCreate(
+                student_id="2021999998",
+                name="연결테스트",
+                email="connection@example.com",
+                password="test1234!",
+            ),
         )
 
     assert user.auth_user_id == str(created_user.id)

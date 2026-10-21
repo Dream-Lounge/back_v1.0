@@ -130,12 +130,12 @@ def create_club(db: Session, user: User, data: ClubCreate) -> Club:
         )
         if not designated_admin:
             raise PermissionError("동아리 관리자 권한이 없습니다.")
-    existing_presidency = db.query(ClubMember.id).filter(
+    existing_management = db.query(ClubMember.id).filter(
         ClubMember.user_id == user.id,
-        ClubMember.role == "president",
+        ClubMember.role.in_(("president", "admin")),
         ClubMember.status == "active",
     ).first()
-    if existing_presidency:
+    if existing_management:
         raise ValueError("관리자 한 명은 하나의 동아리만 개설할 수 있습니다.")
 
     if db.query(Club).filter(Club.name == data.name).first():

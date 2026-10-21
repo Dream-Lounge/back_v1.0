@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
 from src.db.session import get_db
-from src.core.dependencies import require_club_member, require_club_president
+from src.core.dependencies import require_club_manager, require_club_member
 from src.schemas.post import (
     PostCreate, PostUpdate, PostListItem, PostResponse, PostDetailResponse,
     CommentCreate, CommentResponse,
@@ -92,7 +92,7 @@ def toggle_notice(
     club_id: str,
     post_id: str,
     db: Session = Depends(get_db),
-    current_user=Depends(require_club_president),
+    current_user=Depends(require_club_manager),
 ):
     """공지 상태 전환 (회장 전용). 일반 글 → 공지 또는 공지 → 일반 글."""
     try:

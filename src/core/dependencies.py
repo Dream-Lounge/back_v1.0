@@ -70,24 +70,32 @@ def get_current_user(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="사용자를 찾을 수 없습니다.",
         )
+    if (
+        not user.email_verified
+        and not user.email.lower().endswith("@simple.dreamlounge.local")
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="이메일 인증을 완료해주세요.",
+        )
     return user
 
 
 def is_designated_club_admin(db: Session, user_id: str) -> bool:
-    """온보딩 개방 대상 또는 현직 회장인지 확인한다."""
+    """온보딩 개방 대상 또는 현직 회장/관리자인지 확인한다."""
     from src.models.club_member import ClubMember
 
     if is_self_service_club_admin_open():
         return True
     return db.query(ClubMember.id).filter(
         ClubMember.user_id == user_id,
-        ClubMember.role == "president",
+        ClubMember.role.in_(("president", "admin")),
         ClubMember.status == "active",
     ).first() is not None
 
 
 def require_club_admin(current_user=Depends(get_current_user), db: Session = Depends(get_db)):
-    """온보딩 개방 대상 또는 현직 동아리 회장만 통과시킨다."""
+    """온보딩 개방 대상 또는 현직 동아리 회장/관리자만 통과시킨다."""
     if not is_designated_club_admin(db, current_user.id):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -109,6 +117,28 @@ def require_club_president(club_id: str, current_user=Depends(require_club_admin
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="동아리 회장만 접근할 수 있습니다.",
+        )
+    return current_user
+
+
+def require_club_manager(
+    club_id: str,
+    current_user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """해당 동아리의 현직 회장 또는 관리자인지 확인한다."""
+    from src.models.club_member import ClubMember
+
+    membership = db.query(ClubMember).filter(
+        ClubMember.club_id == club_id,
+        ClubMember.user_id == current_user.id,
+        ClubMember.role.in_(("president", "admin")),
+        ClubMember.status == "active",
+    ).first()
+    if not membership:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="해당 동아리의 회장 또는 관리자만 접근할 수 있습니다.",
         )
     return current_user
 

@@ -22,7 +22,7 @@ class ClubMember(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
     club_id: Mapped[str] = mapped_column(String(36), ForeignKey("clubs.id"), nullable=False)
     user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), nullable=False)
-    # 'president': 동아리 회장 / 'member': 일반 부원
+    # 'president': 동아리 회장 / 'admin': 동아리 관리자 / 'member': 일반 부원
     role: Mapped[str] = mapped_column(String(20), nullable=False, default="member")
     # 'active': 활동 중 / 'withdrawn': 탈퇴
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="active")

@@ -48,11 +48,16 @@ class Settings(BaseSettings):
     LOGIN_NETWORK_MAX_ATTEMPTS: int = 5000
     REGISTRATION_DEVICE_MAX_PER_HOUR: int = 500
     REGISTRATION_NETWORK_MAX_PER_HOUR: int = 5000
+    EMAIL_VERIFICATION_RESEND_SECONDS: int = 60
     REFRESH_DEVICE_MAX_PER_10_MINUTES: int = 60
     REFRESH_IP_MAX_PER_10_MINUTES: int = 5000
     IMAGE_UPLOAD_MAX_PER_HOUR: int = 20
     TRUST_PROXY_HEADERS: bool = False
     TRUSTED_PROXY_CIDRS: str = "[]"
+
+    RECOMMENDATION_MODEL: str = "fallback"
+    RECOMMENDATION_MODEL_CACHE_DIR: str = ""
+    RECOMMENDATION_QA_THRESHOLD: float = 0.18
 
     @field_validator("DATABASE_URL", "MIGRATION_DATABASE_URL", mode="before")
     @classmethod
@@ -100,8 +105,14 @@ class Settings(BaseSettings):
             or self.SECRET_KEY == "your-super-secret-key-change-this-in-production-min-32-chars"
         ):
             raise ValueError("운영 환경에는 임의 생성한 32자 이상의 SECRET_KEY가 필요합니다.")
-        if not self.SUPABASE_URL.startswith("https://") or not self.SUPABASE_SERVICE_KEY:
-            raise ValueError("운영 환경의 Supabase URL과 service key가 필요합니다.")
+        if (
+            not self.SUPABASE_URL.startswith("https://")
+            or not self.SUPABASE_ANON_KEY
+            or not self.SUPABASE_SERVICE_KEY
+        ):
+            raise ValueError(
+                "운영 환경의 Supabase URL, publishable key와 secret key가 필요합니다."
+            )
 
         runtime_db_user = (make_url(self.DATABASE_URL).username or "").split(".", 1)[0]
         if runtime_db_user in {"postgres", "supabase_admin"}:

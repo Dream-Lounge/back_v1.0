@@ -10,9 +10,12 @@ from src.core.config import settings
 from src.core.dependencies import get_current_user, is_designated_club_admin
 from src.db.session import get_db
 from src.schemas.user import (
+    EmailResendRequest,
+    EmailVerificationRequest,
     UserCreate,
     LoginRequest,
     LogoutRequest,
+    MessageResponse,
     RefreshTokenRequest,
     TokenResponse,
     UserInfo,
@@ -86,7 +89,7 @@ def register(
     response: Response,
     db: Session = Depends(get_db),
 ):
-    """학번 + 8자 이상이며 특수문자를 포함한 비밀번호로 회원가입."""
+    """실제 이메일 인증메일을 발송하며 회원가입. 인증 전에는 로그인할 수 없습니다."""
     try:
         auth_service.enforce_registration_rate_limit(
             db,
@@ -114,6 +117,52 @@ def register(
     return user
 
 
+@router.post("/email/verify", response_model=MessageResponse)
+def verify_email(body: EmailVerificationRequest, db: Session = Depends(get_db)):
+    """이메일로 받은 6자리 OTP를 확인하고 계정을 활성화합니다."""
+    try:
+        auth_service.verify_signup_email(db, str(body.email), body.token)
+    except AuthApiError as e:
+        logger.info("이메일 인증 실패: code=%s", e.code)
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="인증번호가 올바르지 않거나 만료되었습니다.",
+        )
+    except (ValueError, RuntimeError) as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    return MessageResponse(message="이메일 인증이 완료되었습니다. 로그인해주세요.")
+
+
+@router.post("/email/resend", response_model=MessageResponse)
+def resend_email(
+    body: EmailResendRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    """가입 확인 메일 재발송. 계정 존재 여부와 관계없이 같은 응답을 반환합니다."""
+    try:
+        auth_service.resend_signup_email(
+            db,
+            str(body.email),
+            get_rate_limit_client_ip(request),
+            _get_device_id(request),
+        )
+    except auth_service.RateLimitExceeded as e:
+        raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail=str(e))
+    except AuthApiError as e:
+        logger.warning("Supabase 인증메일 재발송 실패: code=%s", e.code)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="인증메일을 발송할 수 없습니다. 잠시 후 다시 시도해주세요.",
+        )
+    except RuntimeError as e:
+        logger.error("인증메일 재발송 설정 오류: %s", e)
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(e))
+    return MessageResponse(
+        message="인증 대기 중인 계정이면 이메일을 다시 발송했습니다."
+    )
+
+
 @router.post("/login", response_model=TokenResponse)
 def login(body: LoginRequest, request: Request, response: Response, db: Session = Depends(get_db)):
     """학번 + 비밀번호 로그인 → JWT + 사용자 정보 반환."""
@@ -137,6 +186,11 @@ def login(body: LoginRequest, request: Request, response: Response, db: Session 
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="학번 또는 비밀번호가 올바르지 않습니다.",
+        )
+    if auth_service.requires_email_verification(user):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="이메일 인증을 완료해주세요.",
         )
     try:
         # 기존 간편 계정도 최초 로그인 시 Supabase Auth에 자동 연결한다.

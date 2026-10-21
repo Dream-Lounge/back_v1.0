@@ -65,9 +65,14 @@ def register_and_login(client, db, student_id: str, password: str = "test1234!")
     """간편 회원가입 후 로그인하고 access_token을 반환한다."""
     register = client.post(
         "/api/v1/auth/register",
-        json={"student_id": student_id, "name": "테스트사용자", "password": password},
+        json={
+            "student_id": student_id,
+            "name": "테스트사용자",
+            "email": f"{student_id.lower()}@example.com",
+            "password": password,
+        },
     )
-    assert register.status_code == 201
+    assert register.status_code == 201, register.text
 
     client.post("/api/v1/auth/login", json={"student_id": student_id, "password": password})
     token = client.cookies.get("dreamlounge_access")

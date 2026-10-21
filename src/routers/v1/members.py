@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
 from src.db.session import get_db
-from src.core.dependencies import require_club_president
+from src.core.dependencies import require_club_manager, require_club_president
 from src.schemas.member import MemberResponse
 from src.services import member_service
 from src.utils.pagination import Page
@@ -16,9 +16,9 @@ def list_members(
     page: int = Query(1, ge=1),
     size: int = Query(20, ge=1, le=100),
     db: Session = Depends(get_db),
-    current_user=Depends(require_club_president),
+    current_user=Depends(require_club_manager),
 ):
-    """동아리 회원 명단 조회 (회장 전용)."""
+    """동아리 회원 명단 조회 (회장/관리자 전용)."""
     return member_service.list_members(db, club_id, page, size)
 
 
@@ -27,9 +27,9 @@ def withdraw_member(
     club_id: str,
     user_id: str,
     db: Session = Depends(get_db),
-    current_user=Depends(require_club_president),
+    current_user=Depends(require_club_manager),
 ):
-    """부원 탈퇴 처리 (회장 전용)."""
+    """일반 부원 탈퇴 처리 (회장/관리자 전용)."""
     try:
         member_service.withdraw_member(db, club_id, user_id)
     except LookupError as e:
@@ -48,6 +48,46 @@ def transfer_role(
     """권한 이전 — 해당 부원이 회장이 되고 기존 회장은 일반 부원으로 변경됩니다 (회장 전용)."""
     try:
         member_service.transfer_role(db, club_id, current_user.id, user_id)
+    except LookupError as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+
+
+@router.patch(
+    "/{club_id}/members/{user_id}/admin",
+    response_model=MemberResponse,
+)
+def assign_admin(
+    club_id: str,
+    user_id: str,
+    db: Session = Depends(get_db),
+    current_user=Depends(require_club_president),
+):
+    """활성 동아리 회원을 관리자로 지정합니다 (회장 전용)."""
+    try:
+        member_service.assign_admin(db, club_id, user_id)
+        return member_service.get_member(db, club_id, user_id)
+    except LookupError as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+
+
+@router.delete(
+    "/{club_id}/members/{user_id}/admin",
+    response_model=MemberResponse,
+)
+def revoke_admin(
+    club_id: str,
+    user_id: str,
+    db: Session = Depends(get_db),
+    current_user=Depends(require_club_president),
+):
+    """동아리 관리자를 일반 회원으로 변경합니다 (회장 전용)."""
+    try:
+        member_service.revoke_admin(db, club_id, user_id)
+        return member_service.get_member(db, club_id, user_id)
     except LookupError as e:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
     except ValueError as e:

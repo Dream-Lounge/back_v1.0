@@ -6,17 +6,17 @@ from src.models.user import User
 from src.schemas.post import PostCreate, PostUpdate
 
 
-def _is_president(db: Session, club_id: str, user_id: str) -> bool:
+def _is_manager(db: Session, club_id: str, user_id: str) -> bool:
     return db.query(ClubMember).filter(
         ClubMember.club_id == club_id,
         ClubMember.user_id == user_id,
-        ClubMember.role == "president",
+        ClubMember.role.in_(("president", "admin")),
         ClubMember.status == "active",
     ).first() is not None
 
 
 def create_post(db: Session, club_id: str, user: User, data: PostCreate) -> Post:
-    is_pres = _is_president(db, club_id, user.id)
+    is_pres = _is_manager(db, club_id, user.id)
     post = Post(
         club_id=club_id,
         author_id=user.id,
@@ -34,7 +34,7 @@ def create_post(db: Session, club_id: str, user: User, data: PostCreate) -> Post
 def _get_president_ids(db: Session, club_id: str) -> set:
     rows = db.query(ClubMember.user_id).filter(
         ClubMember.club_id == club_id,
-        ClubMember.role == "president",
+        ClubMember.role.in_(("president", "admin")),
         ClubMember.status == "active",
     ).all()
     return {r.user_id for r in rows}
@@ -128,7 +128,7 @@ def delete_post(db: Session, club_id: str, post_id: str, user: User) -> None:
     ).first()
     if not post:
         raise LookupError("게시글을 찾을 수 없습니다.")
-    if post.author_id != user.id and not _is_president(db, club_id, user.id):
+    if post.author_id != user.id and not _is_manager(db, club_id, user.id):
         raise PermissionError("삭제 권한이 없습니다.")
 
     post.is_deleted = True
@@ -164,7 +164,7 @@ def delete_comment(db: Session, club_id: str, post_id: str, comment_id: str, use
     ).first()
     if not comment:
         raise LookupError("댓글을 찾을 수 없습니다.")
-    if comment.author_id != user.id and not _is_president(db, club_id, user.id):
+    if comment.author_id != user.id and not _is_manager(db, club_id, user.id):
         raise PermissionError("삭제 권한이 없습니다.")
 
     comment.is_deleted = True

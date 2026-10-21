@@ -1,5 +1,5 @@
 from fastapi import APIRouter
-from src.routers.v1 import auth, clubs, applications, members, posts, notifications
+from src.routers.v1 import auth, clubs, applications, members, posts, notifications, recommendations
 
 router = APIRouter()
 
@@ -9,3 +9,4 @@ router.include_router(applications.router)
 router.include_router(members.router)
 router.include_router(posts.router)
 router.include_router(notifications.router)
+router.include_router(recommendations.router)

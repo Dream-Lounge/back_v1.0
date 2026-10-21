@@ -800,12 +800,8 @@ class TestMemberManagement:
         assert resp.status_code == 400
 
     def test_transfer_role(self, client, db, club_with_member):
-        from src.models.club_admin import ClubAdmin
         from src.models.club_member import ClubMember
         from src.models.club import Club
-
-        db.add(ClubAdmin(user_id=club_with_member["member_user_id"], note="차기 회장"))
-        db.commit()
 
         resp = client.patch(
             f"/api/v1/clubs/{club_with_member['club_id']}/members/{club_with_member['member_user_id']}/role",
@@ -828,13 +824,68 @@ class TestMemberManagement:
         club = db.get(Club, club_with_member["club_id"])
         assert club.president_id == club_with_member["member_user_id"]
 
-    def test_cannot_transfer_role_to_undesignated_member(self, client, club_with_member):
+    def test_regular_member_cannot_transfer_presidency(self, client, club_with_member):
         resp = client.patch(
             f"/api/v1/clubs/{club_with_member['club_id']}/members/{club_with_member['member_user_id']}/role",
+            headers=club_with_member["user_headers"],
+        )
+        assert resp.status_code == 403
+
+    def test_president_can_assign_and_revoke_club_admin(
+        self, client, db, club_with_member
+    ):
+        from src.models.club_member import ClubMember
+
+        assign = client.patch(
+            f"/api/v1/clubs/{club_with_member['club_id']}/members/"
+            f"{club_with_member['member_user_id']}/admin",
             headers=club_with_member["president_headers"],
         )
-        assert resp.status_code == 400
-        assert "운영자가 지정한 관리자" in resp.json()["detail"]
+        assert assign.status_code == 200
+        assert assign.json()["role"] == "admin"
+
+        admin_update = client.patch(
+            f"/api/v1/clubs/{club_with_member['club_id']}",
+            headers=club_with_member["user_headers"],
+            json={"description": "동아리 관리자가 수정했습니다."},
+        )
+        assert admin_update.status_code == 200
+
+        revoke = client.delete(
+            f"/api/v1/clubs/{club_with_member['club_id']}/members/"
+            f"{club_with_member['member_user_id']}/admin",
+            headers=club_with_member["president_headers"],
+        )
+        assert revoke.status_code == 200
+        assert revoke.json()["role"] == "member"
+
+        membership = db.query(ClubMember).filter(
+            ClubMember.club_id == club_with_member["club_id"],
+            ClubMember.user_id == club_with_member["member_user_id"],
+        ).one()
+        assert membership.role == "member"
+
+        denied = client.patch(
+            f"/api/v1/clubs/{club_with_member['club_id']}",
+            headers=club_with_member["user_headers"],
+            json={"description": "권한 해제 후 수정"},
+        )
+        assert denied.status_code == 403
+
+    def test_club_admin_cannot_grant_admin_role(self, client, club_with_member):
+        assign = client.patch(
+            f"/api/v1/clubs/{club_with_member['club_id']}/members/"
+            f"{club_with_member['member_user_id']}/admin",
+            headers=club_with_member["president_headers"],
+        )
+        assert assign.status_code == 200
+
+        forbidden = client.patch(
+            f"/api/v1/clubs/{club_with_member['club_id']}/members/"
+            f"{club_with_member['president'].id}/admin",
+            headers=club_with_member["user_headers"],
+        )
+        assert forbidden.status_code == 403
 
 
 # ── 알림 ──────────────────────────────────────────────────────────────────────

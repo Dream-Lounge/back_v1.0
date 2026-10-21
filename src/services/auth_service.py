@@ -250,9 +250,12 @@ def enforce_refresh_rate_limit(
 
 
 def register_user(db: Session, data: UserCreate) -> User:
-    """학번, 이름과 검증된 비밀번호로 DB 사용자와 Supabase Auth 계정을 생성한다."""
+    """사용자를 만들고 운영 환경에서는 Supabase 확인 메일을 발송한다."""
+    normalized_email = str(data.email).strip().lower()
     if db.query(User).filter(User.student_id == data.student_id).first():
         raise ValueError("이미 가입된 회원 정보입니다.")
+    if db.query(User).filter(User.email == normalized_email).first():
+        raise ValueError("이미 사용 중인 이메일입니다.")
 
     # 중복 확인으로 열린 읽기 트랜잭션을 먼저 끝낸다. 이후 Supabase Auth
     # 네트워크 호출 동안 SQLAlchemy 풀 연결을 점유하지 않게 한다.
@@ -267,35 +270,52 @@ def register_user(db: Session, data: UserCreate) -> User:
         name=data.name,
         phone=None,
         department=None,
-        # Supabase Auth의 email/password 공급자를 쓰기 위한 내부 식별자다.
-        # 실제 학생 이메일이 아니며 API 응답이나 화면에는 노출하지 않는다.
-        email=f"{data.student_id}@simple.dreamlounge.local",
+        email=normalized_email,
         email_verified=False,
+        email_verified_at=None,
     )
     auth_user_id: str | None = None
     try:
-        if settings.SUPABASE_SERVICE_KEY:
-            admin = get_supabase_admin_client().auth.admin
+        if settings.SUPABASE_SERVICE_KEY and settings.SUPABASE_ANON_KEY:
             internal_password = _supabase_password(user_id, data.password)
             try:
-                created = admin.create_user({
+                created = create_supabase_auth_client().auth.sign_up({
                     "email": user.email,
                     "password": internal_password,
-                    "email_confirm": True,
-                    "app_metadata": {
-                        "student_id": user.student_id,
-                        "name": user.name,
+                    "options": {
+                        "data": {
+                            "student_id": user.student_id,
+                            "name": user.name,
+                        }
                     },
                 })
+                if not created.user:
+                    raise RuntimeError("이메일 인증 계정을 생성하지 못했습니다.")
+                if getattr(created.user, "identities", None) == []:
+                    # Confirm email이 켜진 Supabase는 계정 열거 방지를 위해
+                    # 중복 가입에도 가짜 사용자 객체를 반환할 수 있다.
+                    raise ValueError("이미 사용 중인 이메일입니다.")
+                # Confirm email이 꺼져 있으면 Supabase가 즉시 세션을 반환한다.
+                # 운영에서 인증이 우회되지 않도록 설정 오류로 처리한다.
+                if created.session is not None:
+                    get_supabase_admin_client().auth.admin.delete_user(
+                        str(created.user.id), should_soft_delete=False
+                    )
+                    raise RuntimeError(
+                        "Supabase Authentication에서 Confirm email을 활성화해주세요."
+                    )
                 auth_user_id = str(created.user.id)
             except AuthApiError as exc:
-                # 회원가입마다 Auth 사용자 전체를 순회하지 않는다. Supabase가
-                # 원자적으로 판정한 중복 오류 코드만 사용자 오류로 변환한다.
                 if exc.code in {"email_exists", "user_already_exists"}:
-                    raise ValueError("이미 가입된 인증 계정입니다.") from exc
+                    raise ValueError("이미 사용 중인 이메일입니다.") from exc
                 raise
 
             user.auth_user_id = auth_user_id
+        else:
+            # 로컬 단위 테스트와 Supabase를 쓰지 않는 개발 환경 전용이다.
+            # 운영 설정 검증은 URL/publishable/secret key 누락을 허용하지 않는다.
+            user.email_verified = True
+            user.email_verified_at = utc_now_naive()
         db.add(user)
         db.commit()
         return user
@@ -315,6 +335,76 @@ def register_user(db: Session, data: UserCreate) -> User:
             except Exception:
                 logger.exception("DB 가입 실패 후 Supabase Auth 계정 정리에 실패했습니다.")
         raise
+
+
+def requires_email_verification(user: User) -> bool:
+    """과거 간소화 계정은 유지하고 실제 이메일 신규 계정만 인증을 요구한다."""
+    is_legacy_internal_email = user.email.lower().endswith("@simple.dreamlounge.local")
+    return not is_legacy_internal_email and not user.email_verified
+
+
+def verify_signup_email(db: Session, email: str, token: str) -> User:
+    """Supabase OTP를 검증하고 로컬 사용자의 이메일 인증 상태를 동기화한다."""
+    normalized_email = email.strip().lower()
+    response = create_supabase_auth_client().auth.verify_otp({
+        "email": normalized_email,
+        "token": token.strip(),
+        "type": "email",
+    })
+    auth_user = response.user
+    if not auth_user:
+        raise ValueError("인증번호가 올바르지 않거나 만료되었습니다.")
+
+    user = db.query(User).filter(User.email == normalized_email).with_for_update().first()
+    if not user or not user.is_active:
+        raise ValueError("인증할 회원가입 정보를 찾을 수 없습니다.")
+    if user.auth_user_id and user.auth_user_id != str(auth_user.id):
+        raise ValueError("인증 계정 정보가 일치하지 않습니다.")
+
+    user.auth_user_id = str(auth_user.id)
+    user.email_verified = True
+    user.email_verified_at = utc_now_naive()
+    db.commit()
+    db.refresh(user)
+    return user
+
+
+def resend_signup_email(
+    db: Session,
+    email: str,
+    client_ip: str | None = None,
+    device_id: str | None = None,
+) -> bool:
+    """미인증 가입자에게 확인 메일을 재발송한다. 존재 여부는 호출자에게 숨긴다."""
+    normalized_email = email.strip().lower()
+    user = db.query(User).filter(User.email == normalized_email).first()
+    if not user or not user.is_active or user.email_verified:
+        db.rollback()
+        return False
+
+    since = utc_now_naive() - timedelta(seconds=settings.EMAIL_VERIFICATION_RESEND_SECONDS)
+    subject_count, device_count, _ = _recent_event_count(
+        db,
+        "email_resend",
+        normalized_email,
+        since,
+        client_ip,
+        device_id,
+    )
+    if subject_count or device_count:
+        db.rollback()
+        raise RateLimitExceeded(
+            f"인증메일은 {settings.EMAIL_VERIFICATION_RESEND_SECONDS}초 후 다시 요청해주세요."
+        )
+    db.rollback()
+
+    create_supabase_auth_client().auth.resend({
+        "type": "signup",
+        "email": normalized_email,
+    })
+    _record_event(db, "email_resend", normalized_email, client_ip, device_id)
+    db.commit()
+    return True
 
 
 def _refresh_token_digest(token: str) -> str:
@@ -522,6 +612,8 @@ def refresh_supabase_session(db: Session, refresh_token: str):
     ).first()
     if not user:
         raise ValueError("사용자를 찾을 수 없습니다.")
+    if requires_email_verification(user):
+        raise ValueError("이메일 인증을 완료해주세요.")
 
     return session, user
 

@@ -182,6 +182,30 @@ pytest tests/test_auth.py
 pytest --cov=src tests/
 ```
 
+## 🤖 AI 동아리 추천
+
+추천 기능은 운영 `clubs`와 `club_tags` 테이블만 기준으로 동작합니다. 동아리 이름,
+소개, 분야, 분위기, 활동 목적, 활동 기간과 태그를 인덱싱하며 별도 추천 데이터
+이관은 필요하지 않습니다.
+
+```bash
+# 기본 hashing 모델
+RECOMMENDATION_MODEL=fallback uv run uvicorn src.main:app --reload
+
+# Hugging Face E5 모델
+uv sync --extra recommendation
+RECOMMENDATION_MODEL=intfloat/multilingual-e5-small \
+  uv run uvicorn src.main:app --reload
+```
+
+API:
+
+- `POST /api/v1/recommendations`
+- `POST /api/v1/recommendations/qa`
+- `GET /api/v1/recommendations/health`
+
+부하 테스트 실행법은 `load-tests/README.md`를 참고하세요.
+
 ## 📝 코드 스타일
 
 ```bash

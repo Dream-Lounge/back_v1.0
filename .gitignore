@@ -10,6 +10,7 @@ wheels/
 .venv
 .venv-*/
 .uv-cache/
+.model-cache/
 .env
 
 # IDE
@@ -21,6 +22,7 @@ wheels/
 
 # Database
 *.db
+.tools/
 *.sqlite
 *.sqlite3
 
@@ -40,3 +42,6 @@ Thumbs.db
 # Logs
 *.log
 logs/
+.omx/
+.playwright-cli/
+output/playwright/

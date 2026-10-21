@@ -42,6 +42,7 @@ class TestRegister:
         resp = client.post("/api/v1/auth/register", json={
             "student_id": self.STUDENT_ID,
             "name": "홍길동",
+            "email": "register@example.com",
             "password": "test1234!",
         })
         assert resp.status_code == 201
@@ -53,7 +54,12 @@ class TestRegister:
         assert client.cookies.get("dreamlounge_device")
 
     def test_duplicate_student_id(self, client):
-        payload = {"student_id": self.STUDENT_ID, "name": "홍길동", "password": "test1234!"}
+        payload = {
+            "student_id": self.STUDENT_ID,
+            "name": "홍길동",
+            "email": "duplicate@example.com",
+            "password": "test1234!",
+        }
         client.post("/api/v1/auth/register", json=payload)
         resp = client.post("/api/v1/auth/register", json=payload)
         assert resp.status_code == 400
@@ -61,6 +67,15 @@ class TestRegister:
     def test_requires_name(self, client):
         resp = client.post("/api/v1/auth/register", json={
             "student_id": self.STUDENT_ID,
+            "email": "missing-name@example.com",
+            "password": "test1234!",
+        })
+        assert resp.status_code == 422
+
+    def test_requires_email(self, client):
+        resp = client.post("/api/v1/auth/register", json={
+            "student_id": self.STUDENT_ID,
+            "name": "홍길동",
             "password": "test1234!",
         })
         assert resp.status_code == 422
@@ -69,6 +84,7 @@ class TestRegister:
         resp = client.post("/api/v1/auth/register", json={
             "student_id": self.STUDENT_ID,
             "name": "   ",
+            "email": "blank-name@example.com",
             "password": "test1234!",
         })
         assert resp.status_code == 422
@@ -77,6 +93,7 @@ class TestRegister:
         resp = client.post("/api/v1/auth/register", json={
             "student_id": self.STUDENT_ID,
             "name": "홍길동",
+            "email": "short-password@example.com",
             "password": "abc!123",
         })
         assert resp.status_code == 422
@@ -85,6 +102,7 @@ class TestRegister:
         resp = client.post("/api/v1/auth/register", json={
             "student_id": self.STUDENT_ID,
             "name": "홍길동",
+            "email": "no-special@example.com",
             "password": "password123",
         })
         assert resp.status_code == 422
@@ -93,6 +111,7 @@ class TestRegister:
         resp = client.post("/api/v1/auth/register", json={
             "student_id": self.STUDENT_ID,
             "name": "홍길동",
+            "email": "lowercase@example.com",
             "password": "password!",
         })
         assert resp.status_code == 201
@@ -101,9 +120,104 @@ class TestRegister:
         resp = client.post("/api/v1/auth/register", json={
             "student_id": "student",
             "name": "홍길동",
+            "email": "bad-student@example.com",
             "password": "test1234!",
         })
         assert resp.status_code == 422
+
+    def test_supabase_email_otp_verification_is_required_before_login(
+        self, client, db
+    ):
+        from src.models.user import User
+
+        auth_user = MagicMock()
+        auth_user.id = "00000000-0000-0000-0000-000000000555"
+        auth_client = MagicMock()
+        auth_client.auth.sign_up.return_value = MagicMock(
+            user=auth_user,
+            session=None,
+        )
+        auth_client.auth.verify_otp.return_value = MagicMock(user=auth_user)
+
+        with (
+            patch.object(settings, "SUPABASE_SERVICE_KEY", "test-secret"),
+            patch.object(settings, "SUPABASE_ANON_KEY", "test-publishable"),
+            patch(
+                "src.services.auth_service.create_supabase_auth_client",
+                return_value=auth_client,
+            ),
+        ):
+            register = client.post("/api/v1/auth/register", json={
+                "student_id": self.STUDENT_ID,
+                "name": "홍길동",
+                "email": "Verify@Example.com",
+                "password": "test1234!",
+            })
+            assert register.status_code == 201
+
+            blocked = client.post("/api/v1/auth/login", json={
+                "student_id": self.STUDENT_ID,
+                "password": "test1234!",
+            })
+            assert blocked.status_code == 403
+            assert blocked.json()["detail"] == "이메일 인증을 완료해주세요."
+
+            verified = client.post("/api/v1/auth/email/verify", json={
+                "email": "verify@example.com",
+                "token": "123456",
+            })
+            assert verified.status_code == 200
+
+        user = db.query(User).filter(User.student_id == self.STUDENT_ID).one()
+        assert user.email == "verify@example.com"
+        assert user.email_verified is True
+        assert user.email_verified_at is not None
+        auth_client.auth.verify_otp.assert_called_once_with({
+            "email": "verify@example.com",
+            "token": "123456",
+            "type": "email",
+        })
+
+    def test_resend_confirmation_is_rate_limited(self, client, db):
+        auth_user = MagicMock()
+        auth_user.id = "00000000-0000-0000-0000-000000000556"
+        auth_client = MagicMock()
+        auth_client.auth.sign_up.return_value = MagicMock(
+            user=auth_user,
+            session=None,
+        )
+
+        with (
+            patch.object(settings, "SUPABASE_SERVICE_KEY", "test-secret"),
+            patch.object(settings, "SUPABASE_ANON_KEY", "test-publishable"),
+            patch(
+                "src.services.auth_service.create_supabase_auth_client",
+                return_value=auth_client,
+            ),
+        ):
+            register = client.post("/api/v1/auth/register", json={
+                "student_id": self.STUDENT_ID,
+                "name": "홍길동",
+                "email": "resend@example.com",
+                "password": "test1234!",
+            })
+            assert register.status_code == 201
+
+            first = client.post(
+                "/api/v1/auth/email/resend",
+                json={"email": "resend@example.com"},
+            )
+            second = client.post(
+                "/api/v1/auth/email/resend",
+                json={"email": "resend@example.com"},
+            )
+
+        assert first.status_code == 200
+        assert second.status_code == 429
+        auth_client.auth.resend.assert_called_once_with({
+            "type": "signup",
+            "email": "resend@example.com",
+        })
 
 
 # ── 로그인 ─────────────────────────────────────────────────────────────────────
@@ -116,6 +230,7 @@ class TestLogin:
         client.post("/api/v1/auth/register", json={
             "student_id": self.STUDENT_ID,
             "name": "홍길동",
+            "email": "login@example.com",
             "password": self.PASSWORD,
         })
 
@@ -353,13 +468,14 @@ class TestAccountWithdrawal:
         register_resp = client.post("/api/v1/auth/register", json={
             "student_id": "2021000001",
             "name": "재가입사용자",
+            "email": "reregister@example.com",
             "password": "newpass8!",
         })
 
         assert register_resp.status_code == 201
         assert register_resp.json()["id"] != original_user_id
         new_user = db.query(User).filter(User.student_id == "2021000001").one()
-        assert new_user.email == "2021000001@simple.dreamlounge.local"
+        assert new_user.email == "reregister@example.com"
         assert new_user.is_active is True
 
     def test_active_president_must_transfer_role_first(
