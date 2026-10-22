@@ -34,6 +34,7 @@ class User(TimestampMixin, Base):
     email: Mapped[str] = mapped_column(String(255), unique=True, nullable=False, index=True)
     email_verified: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     email_verified_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    password_changed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     pending_email: Mapped[str | None] = mapped_column(String(255), unique=True, nullable=True)
     onboarding_completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     guide_seen_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

@@ -1,15 +1,37 @@
-from fastapi import Depends, HTTPException, Request, status
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from jose import JWTError
 import logging
+from datetime import timezone
+
+from fastapi import Depends, HTTPException, Request, status
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from jose import JWTError
 from sqlalchemy.orm import Session
-from src.db.session import get_db
-from src.core.security import decode_access_token
+
 from src.core.config import is_self_service_club_admin_open
+from src.core.security import decode_access_token
+from src.db.session import get_db
 from src.utils.supabase_jwt import decode_supabase_access_token
 
 bearer = HTTPBearer(auto_error=False)
 logger = logging.getLogger(__name__)
+
+
+def _token_predates_password_change(payload: dict, user) -> bool:
+    """비밀번호 변경 전에 발급된 자체/Supabase access token을 거부한다."""
+    changed_at = user.password_changed_at
+    if changed_at is None:
+        return False
+
+    issued_at = payload.get("iat")
+    if isinstance(issued_at, bool) or not isinstance(issued_at, (int, float)):
+        # 비밀번호가 변경된 계정은 발급 시각이 없는 과거 토큰을 신뢰하지 않는다.
+        return True
+
+    changed_epoch = changed_at.replace(tzinfo=timezone.utc).timestamp()
+    if isinstance(issued_at, int):
+        # Supabase JWT의 iat는 정수 초다. 같은 초에 새로 발급된 토큰이 즉시
+        # 거부되지 않도록 Supabase 토큰끼리는 초 단위로 비교한다.
+        return issued_at < int(changed_epoch)
+    return float(issued_at) < changed_epoch
 
 
 def get_current_user(
@@ -63,6 +85,12 @@ def get_current_user(
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="인증 서비스를 사용할 수 없습니다. 잠시 후 다시 시도해주세요.",
+        )
+
+    if _token_predates_password_change(payload, user):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="비밀번호가 변경되어 세션이 만료되었습니다. 다시 로그인해주세요.",
         )
 
     if not user.is_active:

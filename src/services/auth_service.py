@@ -15,10 +15,10 @@ from src.models.club_member import ClubMember
 from src.models.user import (
     AuthRateLimit,
     AuthSession,
+    PlatformRole,
     PrivacyConsent,
     User,
     UserInterest,
-    PlatformRole,
 )
 from src.schemas.user import UserCreate, UserInterestsUpdate, UserProfileUpdate
 from src.services.audit_service import queue_audit_log
@@ -531,33 +531,59 @@ def change_password(
     user: User,
     current_password: str,
     new_password: str,
-    access_token: str | None,
 ) -> None:
     if not verify_password(current_password, user.password_hash):
         raise ValueError("현재 비밀번호가 올바르지 않습니다.")
     if current_password == new_password:
         raise ValueError("새 비밀번호는 현재 비밀번호와 달라야 합니다.")
 
-    if settings.SUPABASE_SERVICE_KEY and user.auth_user_id:
-        internal_password = _supabase_password(user.id, new_password)
-        get_supabase_admin_client().auth.admin.update_user_by_id(
-            str(user.auth_user_id), {"password": internal_password}
-        )
-        if access_token:
-            get_supabase_admin_client().auth.admin.sign_out(access_token, scope="global")
+    admin = None
+    auth_user_id = str(user.auth_user_id) if user.auth_user_id else None
+    old_internal_password = None
+    supabase_password_changed = False
 
-    user.password_hash = hash_password(new_password)
-    db.query(AuthSession).filter(AuthSession.user_id == user.id).delete(
-        synchronize_session=False
-    )
-    queue_audit_log(
-        db,
-        actor_user_id=user.id,
-        action="user.password_changed",
-        target_type="user",
-        target_id=user.id,
-    )
-    db.commit()
+    if settings.SUPABASE_SERVICE_KEY and auth_user_id:
+        admin = get_supabase_admin_client().auth.admin
+        old_internal_password = _supabase_password(user.id, current_password)
+        internal_password = _supabase_password(user.id, new_password)
+        admin.update_user_by_id(auth_user_id, {"password": internal_password})
+        # Supabase는 비밀번호 변경 시 기존 세션을 종료한다. 변경된 비밀번호로
+        # 이미 무효화된 access token을 sign_out에 다시 전달하면 403이 발생한다.
+        supabase_password_changed = True
+
+    try:
+        user.password_hash = hash_password(new_password)
+        user.password_changed_at = utc_now_naive()
+        db.query(AuthSession).filter(AuthSession.user_id == user.id).delete(
+            synchronize_session=False
+        )
+        queue_audit_log(
+            db,
+            actor_user_id=user.id,
+            action="user.password_changed",
+            target_type="user",
+            target_id=user.id,
+        )
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        if supabase_password_changed and admin and auth_user_id and old_internal_password:
+            try:
+                # 외부 Auth만 새 비밀번호가 되는 부분 성공을 방지한다.
+                admin.update_user_by_id(
+                    auth_user_id, {"password": old_internal_password}
+                )
+            except Exception as restore_exc:
+                logger.critical(
+                    "비밀번호 변경 DB 실패 후 Supabase Auth 복구도 실패: user_id=%s error=%s",
+                    user.id,
+                    restore_exc,
+                    exc_info=True,
+                )
+                raise RuntimeError(
+                    "비밀번호 변경 상태를 복구할 수 없습니다. 관리자에게 문의해주세요."
+                ) from exc
+        raise RuntimeError("비밀번호 변경을 완료하지 못했습니다.") from exc
 
 
 def request_email_change(

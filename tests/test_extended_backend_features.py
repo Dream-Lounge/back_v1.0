@@ -1,4 +1,9 @@
-from src.core.security import create_access_token, hash_password
+from unittest.mock import MagicMock, patch
+
+import pytest
+
+from src.core.config import settings
+from src.core.security import create_access_token, hash_password, verify_password
 from src.models.application import Application
 from src.models.club_member import ClubMember
 from src.models.post import Post
@@ -65,6 +70,8 @@ def test_password_change_revokes_local_sessions_and_guide_is_recorded(client, db
     assert guide.json()["guide_seen"] is True
     assert changed.status_code == 204
     assert db.query(AuthSession).filter(AuthSession.user_id == user.id).count() == 0
+    assert user.password_changed_at is not None
+    assert client.get("/api/v1/auth/me", headers=headers).status_code == 401
     assert client.post(
         "/api/v1/auth/login",
         json={"student_id": user.student_id, "password": "test1234!"},
@@ -73,6 +80,68 @@ def test_password_change_revokes_local_sessions_and_guide_is_recorded(client, db
         "/api/v1/auth/login",
         json={"student_id": user.student_id, "password": "new-password!"},
     ).status_code == 200
+
+
+def test_password_change_does_not_sign_out_already_invalidated_supabase_session(client, db):
+    token = register_and_login(client, db, "2026333002")
+    user = db.query(User).filter(User.student_id == "2026333002").one()
+    user.auth_user_id = "00000000-0000-0000-0000-000000000002"
+    db.commit()
+    admin_client = MagicMock()
+
+    with (
+        patch.object(settings, "SUPABASE_SERVICE_KEY", "test-service-key"),
+        patch(
+            "src.services.auth_service.get_supabase_admin_client",
+            return_value=admin_client,
+        ),
+    ):
+        changed = client.post(
+            "/api/v1/auth/password/change",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"current_password": "test1234!", "new_password": "new-password!"},
+        )
+
+    assert changed.status_code == 204
+    admin_client.auth.admin.update_user_by_id.assert_called_once()
+    admin_client.auth.admin.sign_out.assert_not_called()
+    assert verify_password("new-password!", user.password_hash)
+
+
+def test_password_change_restores_supabase_password_when_db_commit_fails(client, db):
+    register_and_login(client, db, "2026333003")
+    user = db.query(User).filter(User.student_id == "2026333003").one()
+    user.auth_user_id = "00000000-0000-0000-0000-000000000003"
+    db.commit()
+    admin_client = MagicMock()
+
+    with (
+        patch.object(settings, "SUPABASE_SERVICE_KEY", "test-service-key"),
+        patch(
+            "src.services.auth_service.get_supabase_admin_client",
+            return_value=admin_client,
+        ),
+        patch.object(db, "commit", side_effect=RuntimeError("forced commit failure")),
+        pytest.raises(RuntimeError, match="비밀번호 변경을 완료하지 못했습니다"),
+    ):
+        from src.services import auth_service
+
+        auth_service.change_password(
+            db,
+            user,
+            "test1234!",
+            "new-password!",
+        )
+
+    assert admin_client.auth.admin.update_user_by_id.call_count == 2
+    first_password = admin_client.auth.admin.update_user_by_id.call_args_list[0].args[1][
+        "password"
+    ]
+    restored_password = admin_client.auth.admin.update_user_by_id.call_args_list[1].args[1][
+        "password"
+    ]
+    assert first_password != restored_password
+    assert verify_password("test1234!", user.password_hash)
 
 
 def test_submitted_application_requires_manager_soft_delete(client, db, auth_headers, seeded_club):

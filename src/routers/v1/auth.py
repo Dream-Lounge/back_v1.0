@@ -397,19 +397,13 @@ def mark_guide_seen(
 @router.post("/password/change", status_code=status.HTTP_204_NO_CONTENT)
 def change_password(
     body: PasswordChangeRequest,
-    request: Request,
     response: Response,
-    credentials: HTTPAuthorizationCredentials | None = Depends(bearer),
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
 ):
-    access_token = (
-        credentials.credentials if credentials is not None
-        else request.cookies.get(ACCESS_COOKIE)
-    )
     try:
         auth_service.change_password(
-            db, current_user, body.current_password, body.new_password, access_token
+            db, current_user, body.current_password, body.new_password
         )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
