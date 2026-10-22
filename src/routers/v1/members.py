@@ -1,8 +1,8 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
-from src.db.session import get_db
 from src.core.dependencies import require_club_manager, require_club_president
+from src.db.session import get_db
 from src.schemas.member import MemberResponse
 from src.services import member_service
 from src.utils.pagination import Page
@@ -29,9 +29,9 @@ def withdraw_member(
     db: Session = Depends(get_db),
     current_user=Depends(require_club_manager),
 ):
-    """일반 부원 탈퇴 처리 (회장/관리자 전용)."""
+    """일반 부원 탈퇴 처리 (회장/관리자). 회장·관리자 대상은 차단한다."""
     try:
-        member_service.withdraw_member(db, club_id, user_id)
+        member_service.withdraw_member(db, club_id, current_user.id, user_id)
     except LookupError as e:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
     except ValueError as e:
@@ -66,7 +66,7 @@ def assign_admin(
 ):
     """활성 동아리 회원을 관리자로 지정합니다 (회장 전용)."""
     try:
-        member_service.assign_admin(db, club_id, user_id)
+        member_service.assign_admin(db, club_id, current_user.id, user_id)
         return member_service.get_member(db, club_id, user_id)
     except LookupError as e:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
@@ -86,7 +86,7 @@ def revoke_admin(
 ):
     """동아리 관리자를 일반 회원으로 변경합니다 (회장 전용)."""
     try:
-        member_service.revoke_admin(db, club_id, user_id)
+        member_service.revoke_admin(db, club_id, current_user.id, user_id)
         return member_service.get_member(db, club_id, user_id)
     except LookupError as e:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))

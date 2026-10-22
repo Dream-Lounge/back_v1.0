@@ -1,4 +1,6 @@
 import json
+import calendar
+from datetime import datetime
 from sqlalchemy import or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
@@ -7,12 +9,26 @@ from src.models.application import Application, ApplicationAnswer, ApplicationFo
 from src.models.club import Club
 from src.models.club_member import ClubMember
 from src.models.user import User
-from src.schemas.application import ApplicationCreate, ApplicationUpdate
+from src.schemas.application import ApplicationCreate, ApplicationUpdate, GuestApplicationCreate
+from src.core.config import settings
+from src.services.audit_service import queue_audit_log
 from src.utils.time import kst_today, utc_now_naive
 
 
 CLUB_PRESIDENT_APPLICATION_ERROR = "동아리 관리자는 본인 동아리에 신청할 수 없습니다."
 RECRUITMENT_CLOSED_ERROR = "모집이 마감된 동아리에는 지원할 수 없습니다."
+
+
+def _add_months(value: datetime, months: int) -> datetime:
+    month_index = value.month - 1 + months
+    year = value.year + month_index // 12
+    month = month_index % 12 + 1
+    day = min(value.day, calendar.monthrange(year, month)[1])
+    return value.replace(year=year, month=month, day=day)
+
+
+def _normalized_phone(value: str | None) -> str:
+    return "".join(char for char in (value or "") if char.isdigit())
 
 
 def _ensure_not_club_president(
@@ -59,6 +75,7 @@ def _to_list_dict(app: Application) -> dict:
         "submitted_at": app.submitted_at,
         "updated_at": app.updated_at,
         "admin_comment": app.admin_comment,
+        "applicant_type": app.applicant_type,
     }
 
 
@@ -102,6 +119,7 @@ def _to_detail_dict(app: Application) -> dict:
         "applicant_name": app.applicant_name,
         "applicant_department": app.applicant_department,
         "applicant_phone": app.applicant_phone,
+        "applicant_email": app.applicant_email,
         "applicant_grade": app.applicant_grade,
     })
     return d
@@ -234,8 +252,12 @@ def create_application(db: Session, user: User, data: ApplicationCreate) -> dict
         user_id=user.id,
         is_draft=data.is_draft,
         status="draft" if data.is_draft else "submitted",
+        applicant_type="member",
         submitted_at=None if data.is_draft else now,
         form_snapshot=None if data.is_draft else _form_snapshot(form),
+        applicant_email=user.email,
+        privacy_policy_version=settings.PRIVACY_POLICY_VERSION if not data.is_draft else None,
+        privacy_agreed_at=now if not data.is_draft else None,
         **applicant_snapshot,
     )
     try:
@@ -262,6 +284,71 @@ def create_application(db: Session, user: User, data: ApplicationCreate) -> dict
         )
         .filter(Application.id == app.id)
         .first()
+    )
+    return _to_detail_dict(result)
+
+
+def create_guest_application(db: Session, data: GuestApplicationCreate) -> dict:
+    form = db.get(ApplicationForm, data.form_id)
+    if not form or not form.is_active:
+        raise ValueError("존재하지 않거나 비활성화된 신청 폼입니다.")
+    _ensure_club_is_recruiting(db, form.club_id)
+    if data.privacy_policy_version != settings.PRIVACY_POLICY_VERSION:
+        raise ValueError("최신 개인정보 수집 동의문을 확인해주세요.")
+    _validate_answers(form.questions, data.answers, require_complete=True)
+
+    duplicate = db.query(Application.id).filter(
+        Application.form_id == form.id,
+        Application.applicant_type == "guest",
+        Application.applicant_student_id == data.applicant_student_id,
+        Application.deleted_at.is_(None),
+    ).first()
+    if duplicate:
+        raise ValueError("이미 제출한 비회원 신청서가 있습니다.")
+
+    now = utc_now_naive()
+    app = Application(
+        form_id=form.id,
+        user_id=None,
+        applicant_type="guest",
+        status="submitted",
+        is_draft=False,
+        submitted_at=now,
+        applicant_student_id=data.applicant_student_id,
+        applicant_name=data.applicant_name,
+        applicant_department=data.applicant_department,
+        applicant_phone=data.applicant_phone,
+        applicant_email=str(data.applicant_email).lower(),
+        applicant_grade=data.applicant_grade,
+        privacy_policy_version=data.privacy_policy_version,
+        privacy_agreed_at=now,
+        guest_notice_agreed_at=now,
+        form_snapshot=_form_snapshot(form),
+    )
+    try:
+        db.add(app)
+        db.flush()
+        db.add_all([
+            ApplicationAnswer(
+                application_id=app.id,
+                question_id=answer.question_id,
+                answer_text=answer.answer_text,
+            )
+            for answer in data.answers
+        ])
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise ValueError("이미 제출한 비회원 신청서가 있습니다.") from exc
+
+    result = (
+        db.query(Application)
+        .options(
+            selectinload(Application.answers),
+            selectinload(Application.form).selectinload(ApplicationForm.club),
+        )
+        .filter(Application.id == app.id)
+        .one()
     )
     return _to_detail_dict(result)
 
@@ -338,6 +425,9 @@ def update_application(
         app.status = "submitted"
         app.submitted_at = utc_now_naive()
         app.form_snapshot = _form_snapshot(form)
+        app.applicant_email = user.email
+        app.privacy_policy_version = settings.PRIVACY_POLICY_VERSION
+        app.privacy_agreed_at = utc_now_naive()
 
     db.commit()
 
@@ -354,7 +444,7 @@ def update_application(
 
 
 def delete_application(db: Session, user: User, application_id: str) -> None:
-    """신청서 삭제 (임시저장) 또는 지원 취소 (제출됨·검토중)."""
+    """사용자는 임시저장 신청서만 삭제할 수 있다."""
     app = (
         db.query(Application)
         .filter(Application.id == application_id, Application.user_id == user.id)
@@ -362,8 +452,8 @@ def delete_application(db: Session, user: User, application_id: str) -> None:
     )
     if not app:
         raise LookupError("신청서를 찾을 수 없습니다.")
-    if app.status in ("passed", "failed"):
-        raise ValueError("이미 심사가 완료된 신청서는 취소할 수 없습니다.")
+    if not app.is_draft or app.status != "draft":
+        raise ValueError("제출된 신청서는 삭제할 수 없습니다. 동아리 관리자에게 문의해주세요.")
     # FK 제약 오류 방지: answers를 먼저 명시 삭제 후 application 삭제
     db.query(ApplicationAnswer).filter(ApplicationAnswer.application_id == app.id).delete(synchronize_session=False)
     db.delete(app)
@@ -375,6 +465,7 @@ def get_draft_applications(db: Session, user: User) -> list[dict]:
         db.query(Application)
         .options(selectinload(Application.form).selectinload(ApplicationForm.club))
         .filter(Application.user_id == user.id, Application.is_draft.is_(True))
+        .filter(Application.deleted_at.is_(None))
         .order_by(Application.updated_at.desc())
         .all()
     )
@@ -403,6 +494,7 @@ def get_submitted_applications(db: Session, user: User) -> list[dict]:
         db.query(Application)
         .options(selectinload(Application.form).selectinload(ApplicationForm.club))
         .filter(Application.user_id == user.id, Application.is_draft.is_(False))
+        .filter(Application.deleted_at.is_(None))
         .order_by(Application.submitted_at.desc())
         .all()
     )
@@ -420,6 +512,7 @@ def get_submitted_application(db: Session, user: User, application_id: str) -> d
             Application.id == application_id,
             Application.user_id == user.id,
             Application.is_draft.is_(False),
+            Application.deleted_at.is_(None),
         )
         .first()
     )
@@ -451,11 +544,16 @@ def _club_applications_query(
     club_id: str,
     search: str | None = None,
     status_filter: str | None = None,
+    applicant_type: str | None = None,
 ):
     query = (
         db.query(Application)
         .join(ApplicationForm, Application.form_id == ApplicationForm.id)
-        .filter(ApplicationForm.club_id == club_id, Application.is_draft.is_(False))
+        .filter(
+            ApplicationForm.club_id == club_id,
+            Application.is_draft.is_(False),
+            Application.deleted_at.is_(None),
+        )
     )
     if search and search.strip():
         pattern = f"%{search.strip()}%"
@@ -466,6 +564,8 @@ def _club_applications_query(
         ))
     if status_filter:
         query = query.filter(Application.status == status_filter)
+    if applicant_type:
+        query = query.filter(Application.applicant_type == applicant_type)
     return query
 
 
@@ -482,7 +582,9 @@ def _to_admin_detail_dict(app: Application) -> dict:
         "admin_comment": app.admin_comment,
         "applicant_department": app.applicant_department,
         "applicant_phone": app.applicant_phone,
+        "applicant_email": app.applicant_email,
         "applicant_grade": app.applicant_grade,
+        "applicant_type": app.applicant_type,
         "answers": detail["answers"],
         "form_snapshot": detail["form_snapshot"],
     }
@@ -494,9 +596,10 @@ def get_club_applications(
     size: int = 20,
     search: str | None = None,
     status_filter: str | None = None,
+    applicant_type: str | None = None,
 ) -> dict:
     """동아리에 제출된 신청서 목록 (is_draft=False)."""
-    query = _club_applications_query(db, club_id, search, status_filter)
+    query = _club_applications_query(db, club_id, search, status_filter, applicant_type)
     total = query.count()
     apps = (
         query.order_by(Application.submitted_at.desc(), Application.id.desc())
@@ -516,7 +619,9 @@ def get_club_applications(
             "admin_comment": a.admin_comment,
             "applicant_department": a.applicant_department,
             "applicant_phone": a.applicant_phone,
+            "applicant_email": a.applicant_email,
             "applicant_grade": a.applicant_grade,
+            "applicant_type": a.applicant_type,
         }
         for a in apps
     ]
@@ -536,9 +641,10 @@ def get_club_applications_export(
     size: int = 100,
     search: str | None = None,
     status_filter: str | None = None,
+    applicant_type: str | None = None,
 ) -> dict:
     """엑셀 생성용 신청자·답변·제출 당시 질문지를 페이지 단위 일괄 조회."""
-    query = _club_applications_query(db, club_id, search, status_filter)
+    query = _club_applications_query(db, club_id, search, status_filter, applicant_type)
     total = query.count()
     applications = (
         query.options(
@@ -572,6 +678,7 @@ def get_club_application(db: Session, club_id: str, application_id: str) -> dict
             ApplicationForm.club_id == club_id,
             Application.id == application_id,
             Application.is_draft.is_(False),
+            Application.deleted_at.is_(None),
         )
         .first()
     )
@@ -589,6 +696,7 @@ def update_application_status(db: Session, club_id: str, application_id: str, ne
             ApplicationForm.club_id == club_id,
             Application.id == application_id,
             Application.is_draft.is_(False),
+            Application.deleted_at.is_(None),
         )
         .with_for_update()
         .first()
@@ -601,13 +709,17 @@ def update_application_status(db: Session, club_id: str, application_id: str, ne
     app.status = new_status
 
     if new_status == "passed":
-        already = db.query(ClubMember).filter(
-            ClubMember.club_id == club_id,
-            ClubMember.user_id == app.user_id,
-            ClubMember.status == "active",
-        ).first()
-        if not already:
-            db.add(ClubMember(club_id=club_id, user_id=app.user_id, role="member", status="active"))
+        app.accepted_at = utc_now_naive()
+        if app.applicant_type == "guest":
+            app.link_expires_at = _add_months(app.accepted_at, 4)
+        else:
+            already = db.query(ClubMember).filter(
+                ClubMember.club_id == club_id,
+                ClubMember.user_id == app.user_id,
+                ClubMember.status == "active",
+            ).first()
+            if not already:
+                db.add(ClubMember(club_id=club_id, user_id=app.user_id, role="member", status="active"))
 
     db.flush()
     return app
@@ -623,12 +735,162 @@ def update_application_comment(
             ApplicationForm.club_id == club_id,
             Application.id == application_id,
             Application.is_draft.is_(False),
+            Application.deleted_at.is_(None),
         )
         .first()
     )
     if not app:
         raise LookupError("신청서를 찾을 수 없습니다.")
+    if app.applicant_type == "guest":
+        raise ValueError("비회원 신청서에는 관리자 코멘트를 작성할 수 없습니다.")
     app.admin_comment = comment.strip() or None
     db.commit()
     db.refresh(app)
     return app
+
+
+def soft_delete_application(
+    db: Session,
+    club_id: str,
+    application_id: str,
+    actor_user_id: str,
+    reason: str,
+) -> None:
+    app = (
+        db.query(Application)
+        .join(ApplicationForm, Application.form_id == ApplicationForm.id)
+        .filter(
+            ApplicationForm.club_id == club_id,
+            Application.id == application_id,
+            Application.is_draft.is_(False),
+            Application.deleted_at.is_(None),
+        )
+        .with_for_update()
+        .first()
+    )
+    if not app:
+        raise LookupError("신청서를 찾을 수 없습니다.")
+    app.deleted_at = utc_now_naive()
+    app.deleted_by = actor_user_id
+    app.deletion_reason = reason.strip()
+    queue_audit_log(
+        db,
+        actor_user_id=actor_user_id,
+        action="application.soft_deleted",
+        target_type="application",
+        target_id=app.id,
+        payload={"club_id": club_id, "reason": app.deletion_reason},
+    )
+    db.commit()
+
+
+def link_eligible_guest_applications(db: Session, user: User) -> dict:
+    if not user.email_verified:
+        raise PermissionError("학교 이메일 인증을 완료해주세요.")
+    now = utc_now_naive()
+    candidates = (
+        db.query(Application)
+        .options(selectinload(Application.form))
+        .filter(
+            Application.applicant_type == "guest",
+            Application.status == "passed",
+            Application.linked_user_id.is_(None),
+            Application.deleted_at.is_(None),
+            Application.link_expires_at >= now,
+            Application.applicant_student_id == user.student_id,
+            Application.applicant_email == user.email.lower(),
+        )
+        .order_by(Application.id.asc())
+        .with_for_update()
+        .all()
+    )
+    matched = [
+        app for app in candidates
+        if app.applicant_name.strip() == user.name.strip()
+        and (app.applicant_department or "").strip() == (user.department or "").strip()
+        and _normalized_phone(app.applicant_phone) == _normalized_phone(user.phone)
+    ]
+    if not matched:
+        raise LookupError("연결 가능한 합격 비회원 신청서를 찾을 수 없습니다.")
+
+    linked_ids: list[str] = []
+    club_ids: list[str] = []
+    for app in matched:
+        club_id = app.form.club_id
+        membership = db.query(ClubMember).filter(
+            ClubMember.club_id == club_id,
+            ClubMember.user_id == user.id,
+        ).with_for_update().first()
+        if membership:
+            membership.status = "active"
+            membership.left_at = None
+            if membership.role not in {"president", "admin"}:
+                membership.role = "member"
+        else:
+            db.add(ClubMember(
+                club_id=club_id,
+                user_id=user.id,
+                role="member",
+                status="active",
+            ))
+        app.linked_user_id = user.id
+        app.linked_at = now
+        linked_ids.append(app.id)
+        club_ids.append(club_id)
+        queue_audit_log(
+            db,
+            actor_user_id=user.id,
+            action="guest_application.linked",
+            target_type="application",
+            target_id=app.id,
+            payload={"club_id": club_id},
+        )
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise ValueError("신청서가 이미 다른 계정에 연결되었습니다.") from exc
+    return {
+        "linked_application_ids": linked_ids,
+        "linked_club_ids": club_ids,
+        "linked_count": len(linked_ids),
+    }
+
+
+def record_guest_link_failure(db: Session, user: User, reason: str) -> None:
+    """비회원 신청서 연결 실패를 개인정보 없이 운영 감사 기록에 남긴다."""
+    queue_audit_log(
+        db,
+        actor_user_id=user.id,
+        action="guest_application.link_failed",
+        target_type="user",
+        target_id=user.id,
+        payload={"reason": reason[:200]},
+    )
+    db.commit()
+
+
+def get_applications_for_csv(
+    db: Session,
+    club_id: str,
+    search: str | None = None,
+    status_filter: str | None = None,
+    applicant_type: str | None = None,
+) -> list[dict]:
+    query = _club_applications_query(
+        db, club_id, search, status_filter, applicant_type
+    )
+    total = query.count()
+    if total > settings.APPLICATION_CSV_MAX_ROWS:
+        raise ValueError(
+            f"CSV는 한 번에 최대 {settings.APPLICATION_CSV_MAX_ROWS}건까지 다운로드할 수 있습니다."
+        )
+    applications = (
+        query.options(
+            selectinload(Application.answers).selectinload(ApplicationAnswer.question),
+            selectinload(Application.form).selectinload(ApplicationForm.club),
+        )
+        .order_by(Application.submitted_at.desc(), Application.id.desc())
+        .all()
+    )
+    return [_to_admin_detail_dict(app) for app in applications]

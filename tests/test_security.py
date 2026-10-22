@@ -153,8 +153,15 @@ def test_registration_creates_auth_user_without_listing_all_users(db):
             auth_service.UserCreate(
                 student_id="2021999999",
                 name="보안테스트",
+                department="컴퓨터공학과",
                 email="security@example.com",
                 password="test1234!",
+                phone="010-1234-5678",
+                privacy_consent={
+                    "required_agreed": True,
+                    "optional_agreed": False,
+                    "policy_version": "test-v1",
+                },
             ),
         )
 
@@ -189,8 +196,15 @@ def test_registration_releases_db_connection_before_auth_request(db):
             auth_service.UserCreate(
                 student_id="2021999998",
                 name="연결테스트",
+                department="컴퓨터공학과",
                 email="connection@example.com",
                 password="test1234!",
+                phone="010-1234-5678",
+                privacy_consent={
+                    "required_agreed": True,
+                    "optional_agreed": False,
+                    "policy_version": "test-v1",
+                },
             ),
         )
 

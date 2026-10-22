@@ -5,6 +5,16 @@ from fastapi.testclient import TestClient
 from src.core.config import settings
 from src.routers.v1.auth import _clear_session_cookies, _set_session_cookies
 
+REGISTRATION_REQUIRED = {
+    "phone": "010-1234-5678",
+    "department": "컴퓨터공학과",
+    "privacy_consent": {
+        "required_agreed": True,
+        "optional_agreed": False,
+        "policy_version": "test-v1",
+    },
+}
+
 
 # ── 헬스체크 ──────────────────────────────────────────────────────────────────
 
@@ -44,13 +54,15 @@ class TestRegister:
             "name": "홍길동",
             "email": "register@example.com",
             "password": "test1234!",
+            **REGISTRATION_REQUIRED,
         })
         assert resp.status_code == 201
         data = resp.json()
         assert data["student_id"] == self.STUDENT_ID
         assert data["name"] == "홍길동"
-        assert "email" not in data
-        assert "email_verified" not in data
+        assert data["email"] == "register@example.com"
+        assert data["email_verified"] is True
+        assert data["phone"] == "010-1234-5678"
         assert client.cookies.get("dreamlounge_device")
 
     def test_duplicate_student_id(self, client):
@@ -59,6 +71,7 @@ class TestRegister:
             "name": "홍길동",
             "email": "duplicate@example.com",
             "password": "test1234!",
+            **REGISTRATION_REQUIRED,
         }
         client.post("/api/v1/auth/register", json=payload)
         resp = client.post("/api/v1/auth/register", json=payload)
@@ -69,6 +82,7 @@ class TestRegister:
             "student_id": self.STUDENT_ID,
             "email": "missing-name@example.com",
             "password": "test1234!",
+            **REGISTRATION_REQUIRED,
         })
         assert resp.status_code == 422
 
@@ -77,6 +91,7 @@ class TestRegister:
             "student_id": self.STUDENT_ID,
             "name": "홍길동",
             "password": "test1234!",
+            **REGISTRATION_REQUIRED,
         })
         assert resp.status_code == 422
 
@@ -86,6 +101,7 @@ class TestRegister:
             "name": "   ",
             "email": "blank-name@example.com",
             "password": "test1234!",
+            **REGISTRATION_REQUIRED,
         })
         assert resp.status_code == 422
 
@@ -95,6 +111,7 @@ class TestRegister:
             "name": "홍길동",
             "email": "short-password@example.com",
             "password": "abc!123",
+            **REGISTRATION_REQUIRED,
         })
         assert resp.status_code == 422
 
@@ -104,6 +121,7 @@ class TestRegister:
             "name": "홍길동",
             "email": "no-special@example.com",
             "password": "password123",
+            **REGISTRATION_REQUIRED,
         })
         assert resp.status_code == 422
 
@@ -113,6 +131,7 @@ class TestRegister:
             "name": "홍길동",
             "email": "lowercase@example.com",
             "password": "password!",
+            **REGISTRATION_REQUIRED,
         })
         assert resp.status_code == 201
 
@@ -122,6 +141,7 @@ class TestRegister:
             "name": "홍길동",
             "email": "bad-student@example.com",
             "password": "test1234!",
+            **REGISTRATION_REQUIRED,
         })
         assert resp.status_code == 422
 
@@ -152,6 +172,7 @@ class TestRegister:
                 "name": "홍길동",
                 "email": "Verify@Example.com",
                 "password": "test1234!",
+                **REGISTRATION_REQUIRED,
             })
             assert register.status_code == 201
 
@@ -200,6 +221,7 @@ class TestRegister:
                 "name": "홍길동",
                 "email": "resend@example.com",
                 "password": "test1234!",
+                **REGISTRATION_REQUIRED,
             })
             assert register.status_code == 201
 
@@ -232,6 +254,7 @@ class TestLogin:
             "name": "홍길동",
             "email": "login@example.com",
             "password": self.PASSWORD,
+            **REGISTRATION_REQUIRED,
         })
 
     def test_success(self, client, db):
@@ -409,6 +432,7 @@ class TestAccountWithdrawal:
         self, client, db, auth_headers, seeded_club
     ):
         from src.models.club_member import ClubMember
+        from src.models.post import Comment, Post
         from src.models.user import User
 
         user = db.query(User).filter(User.student_id == "2021000001").one()
@@ -419,6 +443,17 @@ class TestAccountWithdrawal:
             status="active",
         )
         db.add(membership)
+        post = Post(
+            club_id=seeded_club["club"].id,
+            author_id=user.id,
+            board_scope="club",
+            title="탈퇴 후에도 남을 게시글",
+            content="게시글 내용",
+        )
+        db.add(post)
+        db.flush()
+        comment = Comment(post_id=post.id, author_id=user.id, content="댓글 내용")
+        db.add(comment)
         db.commit()
 
         resp = client.delete("/api/v1/auth/me", headers=auth_headers)
@@ -432,10 +467,12 @@ class TestAccountWithdrawal:
         assert user.email.endswith("@invalid.local")
         assert user.name == "탈퇴한 사용자"
         assert user.phone is None
-        assert user.department is None
+        assert user.department == "탈퇴"
         assert user.auth_user_id is None
         assert membership.status == "withdrawn"
         assert membership.left_at is not None
+        assert db.get(Post, post.id) is not None
+        assert db.get(Comment, comment.id) is not None
 
     def test_withdrawn_account_cannot_use_token_or_login(
         self, client, db, auth_headers
@@ -470,6 +507,7 @@ class TestAccountWithdrawal:
             "name": "재가입사용자",
             "email": "reregister@example.com",
             "password": "newpass8!",
+            **REGISTRATION_REQUIRED,
         })
 
         assert register_resp.status_code == 201
@@ -493,6 +531,32 @@ class TestAccountWithdrawal:
         db.refresh(president)
         assert president.is_active is True
         assert president.withdrawn_at is None
+
+    def test_active_club_admin_can_withdraw_without_revoking_role(
+        self, client, db, auth_headers, seeded_club
+    ):
+        from src.models.club_member import ClubMember
+        from src.models.user import User
+
+        user = db.query(User).filter(User.student_id == "2021000001").one()
+        membership = ClubMember(
+            club_id=seeded_club["club"].id,
+            user_id=user.id,
+            role="admin",
+            status="active",
+        )
+        db.add(membership)
+        db.commit()
+
+        response = client.delete("/api/v1/auth/me", headers=auth_headers)
+
+        assert response.status_code == 204
+        db.refresh(user)
+        db.refresh(membership)
+        assert user.is_active is False
+        assert membership.status == "withdrawn"
+        assert membership.left_at is not None
+        assert membership.role == "admin"
 
     def test_hard_deletes_linked_supabase_auth_user(self, db):
         from src.core.config import settings

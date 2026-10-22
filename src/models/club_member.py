@@ -1,8 +1,11 @@
 from __future__ import annotations
-from uuid import uuid4
+
 from datetime import datetime
-from sqlalchemy import String, DateTime, ForeignKey, Index, text
+from uuid import uuid4
+
+from sqlalchemy import DateTime, ForeignKey, Index, String, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
+
 from src.db.base import Base
 from src.utils.time import utc_now_naive
 
@@ -13,6 +16,13 @@ class ClubMember(Base):
         Index(
             "uq_club_members_one_active_presidency_per_user",
             "user_id",
+            unique=True,
+            postgresql_where=text("status = 'active' AND role = 'president'"),
+            sqlite_where=text("status = 'active' AND role = 'president'"),
+        ),
+        Index(
+            "uq_club_members_one_active_president",
+            "club_id",
             unique=True,
             postgresql_where=text("status = 'active' AND role = 'president'"),
             sqlite_where=text("status = 'active' AND role = 'president'"),

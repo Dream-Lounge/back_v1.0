@@ -1,6 +1,7 @@
 from sqlalchemy.orm import Session
-from src.models.notification import Notification
+
 from src.models.club_member import ClubMember
+from src.models.notification import Notification
 
 
 def _create(db: Session, recipient_id: str, noti_type: str, message: str, payload: dict | None = None) -> Notification:
@@ -20,7 +21,7 @@ def send_application_result(db: Session, user_id: str, club_name: str, status: s
     db.commit()
 
 
-def send_notice_to_members(db: Session, club_id: str, club_name: str, post_title: str, post_id: str) -> None:
+def queue_notice_to_members(db: Session, club_id: str, club_name: str, post_title: str, post_id: str) -> None:
     members = (
         db.query(ClubMember)
         .filter(ClubMember.club_id == club_id, ClubMember.status == "active")
@@ -29,6 +30,10 @@ def send_notice_to_members(db: Session, club_id: str, club_name: str, post_title
     message = f"[{club_name}] 새 공지: {post_title}"
     for m in members:
         _create(db, m.user_id, "new_notice", message, {"club_id": club_id, "post_id": post_id})
+
+
+def send_notice_to_members(db: Session, club_id: str, club_name: str, post_title: str, post_id: str) -> None:
+    queue_notice_to_members(db, club_id, club_name, post_title, post_id)
     db.commit()
 
 
@@ -39,6 +44,31 @@ def get_notifications(db: Session, user_id: str) -> list[Notification]:
         .order_by(Notification.created_at.desc())
         .all()
     )
+
+
+def get_notifications_page(db: Session, user_id: str, page: int, size: int) -> dict:
+    query = db.query(Notification).filter(Notification.recipient_id == user_id)
+    total = query.count()
+    items = (
+        query.order_by(Notification.created_at.desc(), Notification.id.desc())
+        .offset((page - 1) * size)
+        .limit(size)
+        .all()
+    )
+    return {
+        "items": items,
+        "total": total,
+        "page": page,
+        "size": size,
+        "pages": (total + size - 1) // size,
+    }
+
+
+def get_unread_count(db: Session, user_id: str) -> int:
+    return db.query(Notification).filter(
+        Notification.recipient_id == user_id,
+        Notification.is_read.is_(False),
+    ).count()
 
 
 def mark_as_read(db: Session, user_id: str, notification_id: str) -> Notification:

@@ -1,14 +1,20 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
-from src.db.session import get_db
 from src.core.dependencies import require_club_manager, require_club_member
+from src.db.session import get_db
 from src.schemas.post import (
-    PostCreate, PostUpdate, PostListItem, PostResponse, PostDetailResponse,
-    CommentCreate, CommentResponse,
+    CommentCreate,
+    CommentResponse,
+    CommentUpdate,
+    PostCreate,
+    PostDetailResponse,
+    PostListItem,
+    PostResponse,
+    PostUpdate,
 )
-from src.services import post_service, notification_service
-from src.services import club_service
+from src.services import post_service
+from src.utils.pagination import Page
 
 router = APIRouter(prefix="/clubs", tags=["posts"])
 
@@ -23,6 +29,19 @@ def list_posts(
     return post_service.get_posts(db, club_id)
 
 
+@router.get("/{club_id}/posts/page", response_model=Page[PostListItem])
+def list_posts_page(
+    club_id: str,
+    page: int = Query(1, ge=1),
+    size: int = Query(20, ge=1, le=100),
+    search: str | None = Query(None, max_length=100),
+    db: Session = Depends(get_db),
+    current_user=Depends(require_club_member),
+):
+    """동아리 게시판 페이지 조회와 제목·내용 검색."""
+    return post_service.get_posts_page(db, club_id, page, size, search)
+
+
 @router.post("/{club_id}/posts", response_model=PostResponse, status_code=status.HTTP_201_CREATED)
 def create_post(
     club_id: str,
@@ -31,13 +50,9 @@ def create_post(
     current_user=Depends(require_club_member),
 ):
     """게시글 작성. 회장이 작성하면 자동으로 공지 처리됩니다."""
-    post = post_service.create_post(db, club_id, current_user, body)
-
-    if post.is_notice:
-        club = club_service.get_club(db, club_id)
-        notification_service.send_notice_to_members(db, club_id, club.name, post.title, post.id)
-
-    return post
+    return post_service.serialize_post(
+        post_service.create_post(db, club_id, current_user, body)
+    )
 
 
 @router.get("/{club_id}/posts/{post_id}", response_model=PostDetailResponse)
@@ -62,9 +77,11 @@ def update_post(
     db: Session = Depends(get_db),
     current_user=Depends(require_club_member),
 ):
-    """게시글 수정 (작성자 본인만)."""
+    """게시글 수정 (작성자 본인 또는 회장/관리자)."""
     try:
-        return post_service.update_post(db, club_id, post_id, current_user, body)
+        return post_service.serialize_post(
+            post_service.update_post(db, club_id, post_id, current_user, body)
+        )
     except LookupError as e:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
     except PermissionError as e:
@@ -100,11 +117,7 @@ def toggle_notice(
     except LookupError as e:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
 
-    if post.is_notice:
-        club = club_service.get_club(db, club_id)
-        notification_service.send_notice_to_members(db, club_id, club.name, post.title, post.id)
-
-    return post
+    return post_service.serialize_post(post)
 
 
 @router.post("/{club_id}/posts/{post_id}/comments", response_model=CommentResponse, status_code=status.HTTP_201_CREATED)
@@ -120,6 +133,29 @@ def create_comment(
     if not post:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="게시글을 찾을 수 없습니다.")
     return post_service.create_comment(db, post_id, current_user, body.content)
+
+
+@router.patch(
+    "/{club_id}/posts/{post_id}/comments/{comment_id}",
+    response_model=CommentResponse,
+)
+def update_comment(
+    club_id: str,
+    post_id: str,
+    comment_id: str,
+    body: CommentUpdate,
+    db: Session = Depends(get_db),
+    current_user=Depends(require_club_member),
+):
+    """댓글 수정 (작성자 본인 또는 회장/관리자)."""
+    try:
+        return post_service.update_comment(
+            db, club_id, post_id, comment_id, current_user, body.content
+        )
+    except LookupError as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
+    except PermissionError as e:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e))
 
 
 @router.delete("/{club_id}/posts/{post_id}/comments/{comment_id}", status_code=status.HTTP_204_NO_CONTENT)

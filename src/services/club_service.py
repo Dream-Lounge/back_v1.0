@@ -1,17 +1,35 @@
 from sqlalchemy import or_
 from sqlalchemy.orm import Session, selectinload, with_loader_criteria
-from src.models.club import Club, ClubActivityImage, ClubTag
-from src.models.club_member import ClubMember
-from src.models.club_admin import ClubAdmin
-from src.models.application import ApplicationAnswer, ApplicationForm, FormQuestion
-from src.models.user import User
+
 from src.core.config import is_self_service_club_admin_open
-from src.schemas.club import ClubCreate, ClubUpdate, FormCreate, FormUpdate, QuestionCreate, QuestionUpdate
+from src.models.application import ApplicationAnswer, ApplicationForm, FormQuestion
+from src.models.club import Club, ClubActivityImage, ClubTag
+from src.models.club_admin import ClubAdmin
+from src.models.club_member import ClubMember
+from src.models.user import User
+from src.schemas.club import (
+    ClubCreate,
+    ClubUpdate,
+    FormCreate,
+    FormUpdate,
+    QuestionCreate,
+    QuestionUpdate,
+)
+from src.services.audit_service import queue_audit_log
 from src.utils.storage import cleanup_pending_club_images, delete_managed_club_images
 
 
-def get_clubs(db: Session, search: str | None = None) -> list[Club]:
-    """Return clubs whose name or division partially matches ``search``."""
+def _clubs_query(
+    db: Session,
+    search: str | None = None,
+    *,
+    is_recruiting: bool | None = None,
+    division: str | None = None,
+    field: str | None = None,
+    atmosphere: str | None = None,
+    activity_purpose: str | None = None,
+    tags: list[str] | None = None,
+):
     query = (
         db.query(Club)
         .options(
@@ -36,7 +54,56 @@ def get_clubs(db: Session, search: str | None = None) -> list[Club]:
             )
         )
 
-    return query.all()
+    if is_recruiting is not None:
+        query = query.filter(Club.is_recruiting.is_(is_recruiting))
+    for column, value in (
+        (Club.division, division),
+        (Club.field, field),
+        (Club.atmosphere, atmosphere),
+        (Club.activity_purpose, activity_purpose),
+    ):
+        normalized = value.strip() if value else ""
+        if normalized:
+            query = query.filter(column == normalized)
+    for tag_value in tags or []:
+        normalized = tag_value.strip()
+        if normalized:
+            query = query.filter(Club.tags.any(ClubTag.tag_value == normalized))
+    return query
+
+
+def get_clubs(
+    db: Session,
+    search: str | None = None,
+    **filters,
+) -> list[Club]:
+    """모집 중 우선, 같은 상태에서는 이름순으로 동아리를 조회한다."""
+    query = _clubs_query(db, search, **filters)
+    return query.order_by(Club.is_recruiting.desc(), Club.name.asc(), Club.id.asc()).all()
+
+
+def get_clubs_page(
+    db: Session,
+    page: int,
+    size: int,
+    search: str | None = None,
+    **filters,
+) -> dict:
+    query = _clubs_query(db, search, **filters)
+    total = query.count()
+    items = (
+        query.order_by(Club.is_recruiting.desc(), Club.name.asc(), Club.id.asc())
+        .offset((page - 1) * size)
+        .limit(size)
+        .all()
+    )
+    return {
+        "items": items,
+        "total": total,
+        "page": page,
+        "size": size,
+        "pages": (total + size - 1) // size,
+    }
 
 
 def get_club(db: Session, club_id: str) -> Club | None:
@@ -187,6 +254,14 @@ def create_club(db: Session, user: User, data: ClubCreate) -> Club:
     # 동아리 등록 직후부터 지원 페이지가 열릴 수 있도록 빈 기본 폼을 만든다.
     # 관리자는 이후 문항을 자유롭게 추가할 수 있다.
     db.add(ApplicationForm(club_id=club.id, title=f"{club.name} 지원서", is_active=True))
+
+    queue_audit_log(
+        db,
+        actor_user_id=user.id,
+        action="club.created",
+        target_type="club",
+        target_id=club.id,
+    )
 
     db.commit()
     db.refresh(club)

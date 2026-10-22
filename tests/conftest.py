@@ -8,6 +8,8 @@ from sqlalchemy.orm import sessionmaker
 # 테스트가 개발/운영 .env의 Supabase Auth 사용자를 생성하거나 삭제하지 않도록
 # 애플리케이션 설정이 로드되기 전에 외부 Auth 연동을 비활성화한다.
 os.environ["SUPABASE_SERVICE_KEY"] = ""
+os.environ["STUDENT_EMAIL_DOMAINS"] = '["example.com", "cju.ac.kr"]'
+os.environ["PRIVACY_POLICY_VERSION"] = "test-v1"
 from src.main import app
 from src.db.base import Base
 from src.db.session import get_db
@@ -20,6 +22,8 @@ TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engin
 @pytest.fixture(scope="session", autouse=True)
 def setup_db():
     import src.models  # noqa: F401
+    # 모델 변경 뒤 남은 로컬 test.db 스키마를 재사용하지 않는다.
+    Base.metadata.drop_all(bind=engine)
     Base.metadata.create_all(bind=engine)
     yield
     Base.metadata.drop_all(bind=engine)
@@ -70,6 +74,13 @@ def register_and_login(client, db, student_id: str, password: str = "test1234!")
             "name": "테스트사용자",
             "email": f"{student_id.lower()}@example.com",
             "password": password,
+            "phone": "010-1234-5678",
+            "department": "컴퓨터공학과",
+            "privacy_consent": {
+                "required_agreed": True,
+                "optional_agreed": False,
+                "policy_version": "test-v1",
+            },
         },
     )
     assert register.status_code == 201, register.text

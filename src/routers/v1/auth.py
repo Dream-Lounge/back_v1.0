@@ -1,30 +1,36 @@
 import logging
+
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.security import HTTPAuthorizationCredentials
-from supabase_auth.errors import AuthApiError
 from sqlalchemy.exc import OperationalError as DBOperationalError
 from sqlalchemy.orm import Session
+from supabase_auth.errors import AuthApiError
 
-from src.core.security import create_access_token
 from src.core.config import settings
-from src.core.dependencies import get_current_user, is_designated_club_admin
+from src.core.dependencies import bearer, get_current_user, is_designated_club_admin
+from src.core.security import create_access_token
 from src.db.session import get_db
 from src.schemas.user import (
+    EmailChangeRequest,
+    EmailChangeVerificationRequest,
     EmailResendRequest,
     EmailVerificationRequest,
-    UserCreate,
     LoginRequest,
     LogoutRequest,
     MessageResponse,
+    PasswordChangeRequest,
     RefreshTokenRequest,
     TokenResponse,
+    UserCreate,
     UserInfo,
+    UserInterestsResponse,
+    UserInterestsUpdate,
+    UserProfileUpdate,
     UserResponse,
 )
 from src.services import auth_service
 from src.utils.client_ip import get_rate_limit_client_ip
 from src.utils.device import request_device_id
-from src.core.dependencies import bearer
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -40,7 +46,12 @@ def _user_info(db: Session, user) -> UserInfo:
         name=user.name,
         phone=user.phone,
         department=user.department,
+        email=user.email,
+        email_verified=user.email_verified,
+        onboarding_completed=user.onboarding_completed_at is not None,
+        guide_seen=user.guide_seen_at is not None,
         is_club_admin=is_designated_club_admin(db, user.id),
+        platform_roles=auth_service.get_active_platform_roles(db, user.id),
     )
 
 
@@ -161,6 +172,59 @@ def resend_email(
     return MessageResponse(
         message="인증 대기 중인 계정이면 이메일을 다시 발송했습니다."
     )
+
+
+@router.post("/email/change", response_model=MessageResponse)
+def change_email(
+    body: EmailChangeRequest,
+    request: Request,
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer),
+    current_user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """새 학생 이메일로 변경 확인 메일을 발송합니다."""
+    access_token = (
+        credentials.credentials if credentials is not None
+        else request.cookies.get(ACCESS_COOKIE)
+    )
+    refresh_token = request.cookies.get(REFRESH_COOKIE)
+    if not access_token or not refresh_token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="이메일 변경을 위해 다시 로그인해주세요.",
+        )
+    try:
+        auth_service.request_email_change(
+            db,
+            current_user,
+            new_email=str(body.new_email),
+            access_token=access_token,
+            refresh_token=refresh_token,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    except (AuthApiError, RuntimeError) as e:
+        logger.warning("이메일 변경 요청 실패: %s", e)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="이메일 변경 인증을 시작할 수 없습니다.",
+        )
+    return MessageResponse(message="새 이메일로 변경 인증메일을 발송했습니다.")
+
+
+@router.post("/email/change/verify", response_model=MessageResponse)
+def verify_changed_email(
+    body: EmailChangeVerificationRequest,
+    db: Session = Depends(get_db),
+):
+    try:
+        auth_service.verify_email_change(db, str(body.new_email), body.token)
+    except (ValueError, AuthApiError) as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="인증번호가 올바르지 않거나 만료되었습니다.",
+        ) from e
+    return MessageResponse(message="학생 이메일 변경이 완료되었습니다. 다시 로그인해주세요.")
 
 
 @router.post("/login", response_model=TokenResponse)
@@ -313,14 +377,92 @@ def get_me(db: Session = Depends(get_db), current_user=Depends(get_current_user)
     return _user_info(db, current_user)
 
 
+@router.patch("/me", response_model=UserInfo)
+def update_me(
+    body: UserProfileUpdate,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    user = auth_service.update_profile(db, current_user, body)
+    return _user_info(db, user)
+
+
+@router.post("/me/guide-seen", response_model=UserInfo)
+def mark_guide_seen(
+    db: Session = Depends(get_db), current_user=Depends(get_current_user)
+):
+    return _user_info(db, auth_service.mark_guide_seen(db, current_user))
+
+
+@router.post("/password/change", status_code=status.HTTP_204_NO_CONTENT)
+def change_password(
+    body: PasswordChangeRequest,
+    request: Request,
+    response: Response,
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer),
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    access_token = (
+        credentials.credentials if credentials is not None
+        else request.cookies.get(ACCESS_COOKIE)
+    )
+    try:
+        auth_service.change_password(
+            db, current_user, body.current_password, body.new_password, access_token
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    except (AuthApiError, RuntimeError) as exc:
+        logger.warning("비밀번호 변경 실패: %s", exc)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="비밀번호를 변경할 수 없습니다. 잠시 후 다시 시도해주세요.",
+        )
+    _clear_session_cookies(response)
+
+
+@router.get("/me/interests", response_model=UserInterestsResponse)
+def get_my_interests(
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    interests = auth_service.get_interests(db, current_user.id)
+    return {
+        "interests": interests,
+        "onboarding_completed": current_user.onboarding_completed_at is not None,
+    }
+
+
+@router.put("/me/interests", response_model=UserInterestsResponse)
+def update_my_interests(
+    body: UserInterestsUpdate,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    interests = auth_service.replace_interests(db, current_user, body)
+    return {
+        "interests": interests,
+        "onboarding_completed": current_user.onboarding_completed_at is not None,
+    }
+
+
 @router.delete("/me", status_code=status.HTTP_204_NO_CONTENT)
 def withdraw_me(
+    response: Response,
+    request: Request,
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer),
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
 ):
     """현재 로그인한 사용자 회원탈퇴."""
     try:
-        auth_service.withdraw_user(db, current_user)
+        access_token = (
+            credentials.credentials if credentials is not None
+            else request.cookies.get(ACCESS_COOKIE)
+        )
+        auth_service.withdraw_user(db, current_user, access_token)
+        _clear_session_cookies(response)
     except PermissionError as e:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
     except RuntimeError as e:

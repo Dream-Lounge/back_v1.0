@@ -81,6 +81,52 @@ def get_current_user(
     return user
 
 
+def get_optional_current_user(
+    request: Request,
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer),
+    db: Session = Depends(get_db),
+):
+    """공개 읽기 API에서 토큰이 있으면 사용자를 확인하고, 없으면 None을 반환한다."""
+    has_token = credentials is not None or bool(request.cookies.get("dreamlounge_access"))
+    if not has_token:
+        return None
+    return get_current_user(request, credentials, db)
+
+
+def get_platform_roles(db: Session, user_id: str) -> set[str]:
+    from src.models.user import PlatformRole
+
+    rows = db.query(PlatformRole.role).filter(
+        PlatformRole.user_id == user_id,
+        PlatformRole.revoked_at.is_(None),
+    ).all()
+    return {row.role for row in rows}
+
+
+def require_platform_editor(
+    current_user=Depends(get_current_user), db: Session = Depends(get_db)
+):
+    if not get_platform_roles(db, current_user.id).intersection(
+        {"union_admin", "developer", "super_admin"}
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="서비스 운영자 권한이 필요합니다.",
+        )
+    return current_user
+
+
+def require_super_admin(
+    current_user=Depends(get_current_user), db: Session = Depends(get_db)
+):
+    if "super_admin" not in get_platform_roles(db, current_user.id):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="최고 관리자 권한이 필요합니다.",
+        )
+    return current_user
+
+
 def is_designated_club_admin(db: Session, user_id: str) -> bool:
     """온보딩 개방 대상 또는 현직 회장/관리자인지 확인한다."""
     from src.models.club_member import ClubMember

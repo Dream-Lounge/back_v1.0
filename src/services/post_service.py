@@ -1,9 +1,12 @@
+from sqlalchemy import or_
 from sqlalchemy.orm import Session, selectinload, with_loader_criteria
 
-from src.models.post import Post, Comment
+from src.models.club import Club
 from src.models.club_member import ClubMember
+from src.models.post import Comment, Post
 from src.models.user import User
 from src.schemas.post import PostCreate, PostUpdate
+from src.services.notification_service import queue_notice_to_members
 
 
 def _is_manager(db: Session, club_id: str, user_id: str) -> bool:
@@ -24,8 +27,14 @@ def create_post(db: Session, club_id: str, user: User, data: PostCreate) -> Post
         content=data.content,
         post_type="notice" if is_pres else "general",
         is_notice=is_pres,
+        board_scope="club",
+        is_anonymous=data.is_anonymous,
     )
     db.add(post)
+    db.flush()
+    if post.is_notice:
+        club_name = db.query(Club.name).filter(Club.id == club_id).scalar() or "동아리"
+        queue_notice_to_members(db, club_id, club_name, post.title, post.id)
     db.commit()
     db.refresh(post)
     return post
@@ -38,6 +47,21 @@ def _get_president_ids(db: Session, club_id: str) -> set:
         ClubMember.status == "active",
     ).all()
     return {r.user_id for r in rows}
+
+
+def serialize_post(post: Post) -> dict:
+    return {
+        "id": post.id,
+        "club_id": post.club_id,
+        "author_id": None if post.is_anonymous else post.author_id,
+        "post_type": post.post_type,
+        "title": post.title,
+        "content": post.content,
+        "is_notice": post.is_notice,
+        "board_scope": post.board_scope,
+        "is_anonymous": post.is_anonymous,
+        "created_at": post.created_at,
+    }
 
 
 def get_posts(db: Session, club_id: str) -> list[dict]:
@@ -53,16 +77,75 @@ def get_posts(db: Session, club_id: str) -> list[dict]:
     for p in posts:
         result.append({
             "id": p.id,
-            "author_id": p.author_id,
-            "author_name": p.author.name if p.author else "",
+            "author_id": None if p.is_anonymous else p.author_id,
+            "author_name": "익명" if p.is_anonymous else (p.author.name if p.author else ""),
             "post_type": p.post_type,
             "title": p.title,
             "is_notice": p.is_notice,
+            "board_scope": p.board_scope,
+            "is_anonymous": p.is_anonymous,
             "created_at": p.created_at,
             "comment_count": sum(1 for c in p.comments if not c.is_deleted),
             "is_author_president": p.author_id in president_ids,
         })
     return result
+
+
+def get_posts_page(
+    db: Session,
+    club_id: str,
+    page: int = 1,
+    size: int = 20,
+    search: str | None = None,
+) -> dict:
+    """동아리 게시판을 페이지 단위로 검색한다."""
+    president_ids = _get_president_ids(db, club_id)
+    query = (
+        db.query(Post)
+        .options(selectinload(Post.author), selectinload(Post.comments))
+        .filter(
+            Post.club_id == club_id,
+            Post.board_scope == "club",
+            Post.is_deleted.is_(False),
+        )
+    )
+    if search and search.strip():
+        pattern = f"%{search.strip()}%"
+        query = query.filter(or_(Post.title.ilike(pattern), Post.content.ilike(pattern)))
+    total = query.count()
+    posts = (
+        query.order_by(Post.is_notice.desc(), Post.created_at.desc(), Post.id.desc())
+        .offset((page - 1) * size)
+        .limit(size)
+        .all()
+    )
+    items = [
+        {
+            "id": post.id,
+            "author_id": None if post.is_anonymous else post.author_id,
+            "author_name": "익명"
+            if post.is_anonymous
+            else (post.author.name if post.author else ""),
+            "post_type": post.post_type,
+            "title": post.title,
+            "is_notice": post.is_notice,
+            "board_scope": post.board_scope,
+            "is_anonymous": post.is_anonymous,
+            "created_at": post.created_at,
+            "comment_count": sum(
+                1 for comment in post.comments if not comment.is_deleted
+            ),
+            "is_author_president": post.author_id in president_ids,
+        }
+        for post in posts
+    ]
+    return {
+        "items": items,
+        "total": total,
+        "page": page,
+        "size": size,
+        "pages": (total + size - 1) // size,
+    }
 
 
 def get_post(db: Session, club_id: str, post_id: str) -> dict | None:
@@ -82,12 +165,14 @@ def get_post(db: Session, club_id: str, post_id: str) -> dict | None:
     return {
         "id": post.id,
         "club_id": post.club_id,
-        "author_id": post.author_id,
-        "author_name": post.author.name if post.author else "",
+        "author_id": None if post.is_anonymous else post.author_id,
+        "author_name": "익명" if post.is_anonymous else (post.author.name if post.author else ""),
         "post_type": post.post_type,
         "title": post.title,
         "content": post.content,
         "is_notice": post.is_notice,
+        "board_scope": post.board_scope,
+        "is_anonymous": post.is_anonymous,
         "created_at": post.created_at,
         "is_author_president": post.author_id in president_ids,
         "comments": [
@@ -111,8 +196,8 @@ def update_post(db: Session, club_id: str, post_id: str, user: User, data: PostU
     ).first()
     if not post:
         raise LookupError("게시글을 찾을 수 없습니다.")
-    if post.author_id != user.id:
-        raise PermissionError("본인 게시글만 수정할 수 있습니다.")
+    if post.author_id != user.id and not _is_manager(db, club_id, user.id):
+        raise PermissionError("게시글 수정 권한이 없습니다.")
 
     for field, value in data.model_dump(exclude_unset=True).items():
         setattr(post, field, value)
@@ -145,6 +230,9 @@ def toggle_notice(db: Session, club_id: str, post_id: str) -> Post:
 
     post.is_notice = not post.is_notice
     post.post_type = "notice" if post.is_notice else "general"
+    if post.is_notice:
+        club_name = db.query(Club.name).filter(Club.id == club_id).scalar() or "동아리"
+        queue_notice_to_members(db, club_id, club_name, post.title, post.id)
     db.commit()
     db.refresh(post)
     return post
@@ -153,6 +241,29 @@ def toggle_notice(db: Session, club_id: str, post_id: str) -> Post:
 def create_comment(db: Session, post_id: str, user: User, content: str) -> Comment:
     comment = Comment(post_id=post_id, author_id=user.id, content=content)
     db.add(comment)
+    db.commit()
+    db.refresh(comment)
+    return comment
+
+
+def update_comment(
+    db: Session,
+    club_id: str,
+    post_id: str,
+    comment_id: str,
+    user: User,
+    content: str,
+) -> Comment:
+    comment = db.query(Comment).filter(
+        Comment.id == comment_id,
+        Comment.post_id == post_id,
+        Comment.is_deleted.is_(False),
+    ).first()
+    if not comment:
+        raise LookupError("댓글을 찾을 수 없습니다.")
+    if comment.author_id != user.id and not _is_manager(db, club_id, user.id):
+        raise PermissionError("댓글 수정 권한이 없습니다.")
+    comment.content = content
     db.commit()
     db.refresh(comment)
     return comment

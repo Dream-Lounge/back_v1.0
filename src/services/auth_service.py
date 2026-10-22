@@ -1,24 +1,32 @@
 import hashlib
 import hmac
-import secrets
 import logging
+import secrets
 from datetime import datetime, timedelta
 from uuid import uuid4
-from sqlalchemy.orm import Session
+
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session
 from supabase_auth.errors import AuthApiError
 
 from src.core.config import settings
 from src.core.security import hash_password, verify_password
 from src.models.club_member import ClubMember
-from src.models.user import User, PrivacyConsent, AuthRateLimit, AuthSession
-from src.schemas.user import UserCreate
-from src.utils.time import utc_now_naive
+from src.models.user import (
+    AuthRateLimit,
+    AuthSession,
+    PrivacyConsent,
+    User,
+    UserInterest,
+    PlatformRole,
+)
+from src.schemas.user import UserCreate, UserInterestsUpdate, UserProfileUpdate
+from src.services.audit_service import queue_audit_log
 from src.utils.supabase_client import (
     create_supabase_auth_client,
     get_supabase_admin_client,
 )
-
+from src.utils.time import utc_now_naive
 
 logger = logging.getLogger(__name__)
 ACTIVE_PRESIDENT_WITHDRAWAL_ERROR = (
@@ -230,6 +238,25 @@ def enforce_registration_rate_limit(
     db.commit()
 
 
+def enforce_guest_application_rate_limit(
+    db: Session,
+    student_id: str,
+    client_ip: str | None,
+    device_id: str,
+) -> None:
+    since = utc_now_naive() - timedelta(hours=1)
+    _, device_count, ip_count = _recent_event_count(
+        db, "guest_application", student_id, since, client_ip, device_id
+    )
+    if (
+        device_count >= settings.GUEST_APPLICATION_DEVICE_MAX_PER_HOUR
+        or ip_count >= settings.GUEST_APPLICATION_NETWORK_MAX_PER_HOUR
+    ):
+        raise RateLimitExceeded("비회원 지원 요청이 너무 많습니다. 잠시 후 다시 시도해주세요.")
+    _record_event(db, "guest_application", student_id, client_ip, device_id)
+    db.commit()
+
+
 def enforce_refresh_rate_limit(
     db: Session,
     device_id: str,
@@ -252,6 +279,10 @@ def enforce_refresh_rate_limit(
 def register_user(db: Session, data: UserCreate) -> User:
     """사용자를 만들고 운영 환경에서는 Supabase 확인 메일을 발송한다."""
     normalized_email = str(data.email).strip().lower()
+    if not data.privacy_consent.required_agreed:
+        raise ValueError("필수 개인정보 수집 및 이용에 동의해야 합니다.")
+    if data.privacy_consent.policy_version != settings.PRIVACY_POLICY_VERSION:
+        raise ValueError("최신 개인정보 수집 동의문을 확인해주세요.")
     if db.query(User).filter(User.student_id == data.student_id).first():
         raise ValueError("이미 가입된 회원 정보입니다.")
     if db.query(User).filter(User.email == normalized_email).first():
@@ -268,8 +299,8 @@ def register_user(db: Session, data: UserCreate) -> User:
         student_id=data.student_id,
         password_hash=hash_password(data.password),
         name=data.name,
-        phone=None,
-        department=None,
+        phone=data.phone,
+        department=data.department,
         email=normalized_email,
         email_verified=False,
         email_verified_at=None,
@@ -317,6 +348,22 @@ def register_user(db: Session, data: UserCreate) -> User:
             user.email_verified = True
             user.email_verified_at = utc_now_naive()
         db.add(user)
+        db.add(
+            PrivacyConsent(
+                user_id=user.id,
+                required_agreed=True,
+                optional_agreed=data.privacy_consent.optional_agreed,
+                policy_version=data.privacy_consent.policy_version,
+            )
+        )
+        queue_audit_log(
+            db,
+            actor_user_id=user.id,
+            action="user.registered",
+            target_type="user",
+            target_id=user.id,
+            payload={"policy_version": data.privacy_consent.policy_version},
+        )
         db.commit()
         return user
     except IntegrityError as exc:
@@ -405,6 +452,224 @@ def resend_signup_email(
     _record_event(db, "email_resend", normalized_email, client_ip, device_id)
     db.commit()
     return True
+
+
+def update_profile(db: Session, user: User, data: UserProfileUpdate) -> User:
+    """학번과 이름은 고정하고 사용자가 관리 가능한 개인정보만 변경한다."""
+    changed: list[str] = []
+    for field, value in data.model_dump(exclude_unset=True).items():
+        if getattr(user, field) != value:
+            setattr(user, field, value)
+            changed.append(field)
+    if changed:
+        queue_audit_log(
+            db,
+            actor_user_id=user.id,
+            action="user.profile_updated",
+            target_type="user",
+            target_id=user.id,
+            payload={"fields": changed},
+        )
+        db.commit()
+        db.refresh(user)
+    return user
+
+
+def replace_interests(db: Session, user: User, data: UserInterestsUpdate) -> list[UserInterest]:
+    """관심분야 전체를 한 트랜잭션으로 교체하고 최초 설정 완료 시각을 기록한다."""
+    db.query(UserInterest).filter(UserInterest.user_id == user.id).delete(
+        synchronize_session=False
+    )
+    interests = [
+        UserInterest(user_id=user.id, tag_key=item.tag_key, tag_value=item.tag_value)
+        for item in data.interests
+    ]
+    db.add_all(interests)
+    if data.complete_onboarding and user.onboarding_completed_at is None:
+        user.onboarding_completed_at = utc_now_naive()
+    queue_audit_log(
+        db,
+        actor_user_id=user.id,
+        action="user.interests_updated",
+        target_type="user",
+        target_id=user.id,
+        payload={"count": len(interests)},
+    )
+    db.commit()
+    return interests
+
+
+def get_interests(db: Session, user_id: str) -> list[UserInterest]:
+    return (
+        db.query(UserInterest)
+        .filter(UserInterest.user_id == user_id)
+        .order_by(UserInterest.tag_key.asc(), UserInterest.tag_value.asc())
+        .all()
+    )
+
+
+def get_active_platform_roles(db: Session, user_id: str) -> list[str]:
+    return [
+        row.role
+        for row in db.query(PlatformRole.role)
+        .filter(PlatformRole.user_id == user_id, PlatformRole.revoked_at.is_(None))
+        .order_by(PlatformRole.role.asc())
+        .all()
+    ]
+
+
+def mark_guide_seen(db: Session, user: User) -> User:
+    if user.guide_seen_at is None:
+        user.guide_seen_at = utc_now_naive()
+        db.commit()
+        db.refresh(user)
+    return user
+
+
+def change_password(
+    db: Session,
+    user: User,
+    current_password: str,
+    new_password: str,
+    access_token: str | None,
+) -> None:
+    if not verify_password(current_password, user.password_hash):
+        raise ValueError("현재 비밀번호가 올바르지 않습니다.")
+    if current_password == new_password:
+        raise ValueError("새 비밀번호는 현재 비밀번호와 달라야 합니다.")
+
+    if settings.SUPABASE_SERVICE_KEY and user.auth_user_id:
+        internal_password = _supabase_password(user.id, new_password)
+        get_supabase_admin_client().auth.admin.update_user_by_id(
+            str(user.auth_user_id), {"password": internal_password}
+        )
+        if access_token:
+            get_supabase_admin_client().auth.admin.sign_out(access_token, scope="global")
+
+    user.password_hash = hash_password(new_password)
+    db.query(AuthSession).filter(AuthSession.user_id == user.id).delete(
+        synchronize_session=False
+    )
+    queue_audit_log(
+        db,
+        actor_user_id=user.id,
+        action="user.password_changed",
+        target_type="user",
+        target_id=user.id,
+    )
+    db.commit()
+
+
+def request_email_change(
+    db: Session,
+    user: User,
+    *,
+    new_email: str,
+    access_token: str,
+    refresh_token: str,
+) -> None:
+    """Supabase의 인증된 사용자 이메일 변경 흐름을 시작한다."""
+    normalized = new_email.strip().lower()
+    if normalized == user.email:
+        raise ValueError("현재 이메일과 동일합니다.")
+    duplicate = db.query(User.id).filter(
+        (User.email == normalized) | (User.pending_email == normalized)
+    ).first()
+    if duplicate:
+        raise ValueError("이미 사용 중인 이메일입니다.")
+    if not user.auth_user_id:
+        raise RuntimeError("이메일 인증 계정이 연결되어 있지 않습니다.")
+
+    # update_user는 현재 사용자의 세션을 요구하며 이메일 변경 확인 메일을
+    # Supabase SMTP 설정을 통해 전송한다.
+    auth = create_supabase_auth_client().auth
+    auth.set_session(access_token, refresh_token)
+    auth.update_user({"email": normalized})
+
+    user.pending_email = normalized
+    queue_audit_log(
+        db,
+        actor_user_id=user.id,
+        action="user.email_change_requested",
+        target_type="user",
+        target_id=user.id,
+    )
+    db.commit()
+
+
+def verify_email_change(db: Session, new_email: str, token: str) -> User:
+    normalized = new_email.strip().lower()
+    response = create_supabase_auth_client().auth.verify_otp({
+        "email": normalized,
+        "token": token.strip(),
+        "type": "email_change",
+    })
+    auth_user = response.user
+    if not auth_user:
+        raise ValueError("인증번호가 올바르지 않거나 만료되었습니다.")
+
+    user = (
+        db.query(User)
+        .filter(User.auth_user_id == str(auth_user.id), User.pending_email == normalized)
+        .with_for_update()
+        .first()
+    )
+    if not user or not user.is_active:
+        raise ValueError("이메일 변경 요청을 찾을 수 없습니다.")
+    user.email = normalized
+    user.pending_email = None
+    user.email_verified = True
+    user.email_verified_at = utc_now_naive()
+    queue_audit_log(
+        db,
+        actor_user_id=user.id,
+        action="user.email_changed",
+        target_type="user",
+        target_id=user.id,
+    )
+    db.commit()
+    db.refresh(user)
+    return user
+
+
+def cleanup_stale_unverified_users(db: Session, limit: int = 100) -> int:
+    """보관 기간이 지난 미인증 가입 대기 계정을 제한된 수만큼 정리한다."""
+    cutoff = utc_now_naive() - timedelta(days=settings.UNVERIFIED_ACCOUNT_RETENTION_DAYS)
+    users = (
+        db.query(User)
+        .filter(
+            User.email_verified.is_(False),
+            User.is_active.is_(True),
+            User.created_at < cutoff,
+        )
+        .order_by(User.created_at.asc())
+        .limit(max(1, min(limit, 500)))
+        .all()
+    )
+    deleted = 0
+    for stale in users:
+        auth_user_id = stale.auth_user_id
+        if settings.SUPABASE_SERVICE_KEY and auth_user_id:
+            try:
+                get_supabase_admin_client().auth.admin.delete_user(
+                    auth_user_id, should_soft_delete=False
+                )
+            except Exception:
+                logger.exception("미인증 Supabase Auth 계정 정리에 실패했습니다: %s", stale.id)
+                continue
+        db.query(PrivacyConsent).filter(PrivacyConsent.user_id == stale.id).delete(
+            synchronize_session=False
+        )
+        db.query(AuthSession).filter(AuthSession.user_id == stale.id).delete(
+            synchronize_session=False
+        )
+        db.query(UserInterest).filter(UserInterest.user_id == stale.id).delete(
+            synchronize_session=False
+        )
+        db.delete(stale)
+        deleted += 1
+    db.commit()
+    return deleted
 
 
 def _refresh_token_digest(token: str) -> str:
@@ -625,7 +890,7 @@ def revoke_supabase_session(access_token: str) -> None:
     get_supabase_admin_client().auth.admin.sign_out(access_token, scope="local")
 
 
-def withdraw_user(db: Session, user: User) -> None:
+def withdraw_user(db: Session, user: User, access_token: str | None = None) -> None:
     """인증 계정을 삭제하고 개인정보를 익명화해 동일 정보 재가입을 허용한다."""
     active_presidency = db.query(ClubMember).filter(
         ClubMember.user_id == user.id,
@@ -634,7 +899,6 @@ def withdraw_user(db: Session, user: User) -> None:
     ).first()
     if active_presidency:
         raise PermissionError(ACTIVE_PRESIDENT_WITHDRAWAL_ERROR)
-
     withdrawn_at = utc_now_naive()
     active_memberships = db.query(ClubMember).filter(
         ClubMember.user_id == user.id,
@@ -655,7 +919,9 @@ def withdraw_user(db: Session, user: User) -> None:
     user.password_hash = hash_password(secrets.token_urlsafe(32))
     user.name = "탈퇴한 사용자"
     user.phone = None
-    user.department = None
+    # department는 신규 가입부터 필수/NOT NULL이므로 탈퇴 처리에서도
+    # 개인정보를 제거한 비식별 값으로 유지한다.
+    user.department = "탈퇴"
     user.email = f"deleted+{user.id}@invalid.local"
     user.email_verified = False
     user.is_active = False
@@ -664,6 +930,9 @@ def withdraw_user(db: Session, user: User) -> None:
     db.query(PrivacyConsent).filter(
         PrivacyConsent.user_id == user.id,
     ).delete(synchronize_session=False)
+    db.query(UserInterest).filter(UserInterest.user_id == user.id).delete(
+        synchronize_session=False
+    )
     db.query(AuthRateLimit).filter(
         AuthRateLimit.subject_hash == _rate_subject("login_failure", original_student_id)
     ).delete(synchronize_session=False)
@@ -672,8 +941,19 @@ def withdraw_user(db: Session, user: User) -> None:
     )
 
     try:
+        queue_audit_log(
+            db,
+            actor_user_id=user.id,
+            action="user.withdrawn",
+            target_type="user",
+            target_id=user.id,
+        )
         db.flush()
         if settings.SUPABASE_SERVICE_KEY and auth_user_id:
+            if access_token:
+                get_supabase_admin_client().auth.admin.sign_out(
+                    access_token, scope="global"
+                )
             get_supabase_admin_client().auth.admin.delete_user(
                 auth_user_id,
                 should_soft_delete=False,

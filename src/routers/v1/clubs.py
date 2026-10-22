@@ -1,17 +1,35 @@
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query, Request, Response, status
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    HTTPException,
+    Query,
+    Request,
+    Response,
+    UploadFile,
+    status,
+)
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
-from src.db.session import get_db
+
 from src.core.dependencies import require_club_admin, require_club_manager
+from src.db.session import get_db
 from src.schemas.club import (
-    ClubCreate, ClubUpdate, ClubResponse,
-    ApplicationFormResponse, FormCreate, FormUpdate,
-    FormQuestionResponse, QuestionCreate, QuestionUpdate, QuestionReorderRequest,
+    ApplicationFormResponse,
+    ClubCreate,
+    ClubResponse,
+    ClubUpdate,
+    FormCreate,
+    FormQuestionResponse,
+    FormUpdate,
+    QuestionCreate,
+    QuestionReorderRequest,
+    QuestionUpdate,
 )
-from src.services import club_service
-from src.services import auth_service
-from src.utils.storage import upload_club_image, upload_pending_club_image
+from src.services import auth_service, club_service
 from src.utils.client_ip import get_rate_limit_client_ip
+from src.utils.pagination import Page
+from src.utils.storage import upload_club_image, upload_pending_club_image
 
 router = APIRouter(prefix="/clubs", tags=["clubs"])
 
@@ -78,11 +96,56 @@ async def upload_image(
 def list_clubs(
     response: Response,
     search: str | None = Query(default=None, max_length=100),
+    is_recruiting: bool | None = Query(default=None),
+    division: str | None = Query(default=None, max_length=100),
+    field: str | None = Query(default=None, max_length=100),
+    atmosphere: str | None = Query(default=None, max_length=100),
+    activity_purpose: str | None = Query(default=None, max_length=100),
+    tag: list[str] | None = Query(default=None, max_length=20),
     db: Session = Depends(get_db),
 ):
     """동아리 목록 조회. search 입력 시 동아리 이름 또는 분과로 부분 검색."""
     response.headers["Cache-Control"] = PUBLIC_CLUB_CACHE_CONTROL
-    return club_service.get_clubs(db, search)
+    return club_service.get_clubs(
+        db,
+        search,
+        is_recruiting=is_recruiting,
+        division=division,
+        field=field,
+        atmosphere=atmosphere,
+        activity_purpose=activity_purpose,
+        tags=tag,
+    )
+
+
+@router.get("/page", response_model=Page[ClubResponse])
+def list_clubs_page(
+    response: Response,
+    page: int = Query(1, ge=1),
+    size: int = Query(20, ge=1, le=100),
+    search: str | None = Query(default=None, max_length=100),
+    is_recruiting: bool | None = Query(default=None),
+    division: str | None = Query(default=None, max_length=100),
+    field: str | None = Query(default=None, max_length=100),
+    atmosphere: str | None = Query(default=None, max_length=100),
+    activity_purpose: str | None = Query(default=None, max_length=100),
+    tag: list[str] | None = Query(default=None, max_length=20),
+    db: Session = Depends(get_db),
+):
+    """필터와 정렬을 적용한 동아리 페이지 조회."""
+    response.headers["Cache-Control"] = PUBLIC_CLUB_CACHE_CONTROL
+    return club_service.get_clubs_page(
+        db,
+        page,
+        size,
+        search,
+        is_recruiting=is_recruiting,
+        division=division,
+        field=field,
+        atmosphere=atmosphere,
+        activity_purpose=activity_purpose,
+        tags=tag,
+    )
 
 
 @router.get("/{club_id}", response_model=ClubResponse)

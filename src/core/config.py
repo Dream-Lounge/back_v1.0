@@ -1,6 +1,6 @@
 import json
 from urllib.parse import quote, unquote
-from typing import List
+
 from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings
 from sqlalchemy.engine import make_url
@@ -49,9 +49,15 @@ class Settings(BaseSettings):
     REGISTRATION_DEVICE_MAX_PER_HOUR: int = 500
     REGISTRATION_NETWORK_MAX_PER_HOUR: int = 5000
     EMAIL_VERIFICATION_RESEND_SECONDS: int = 60
+    STUDENT_EMAIL_DOMAINS: str = '["cju.ac.kr"]'
+    PRIVACY_POLICY_VERSION: str = "2026-10-21"
+    UNVERIFIED_ACCOUNT_RETENTION_DAYS: int = 7
     REFRESH_DEVICE_MAX_PER_10_MINUTES: int = 60
     REFRESH_IP_MAX_PER_10_MINUTES: int = 5000
     IMAGE_UPLOAD_MAX_PER_HOUR: int = 20
+    GUEST_APPLICATION_DEVICE_MAX_PER_HOUR: int = 10
+    GUEST_APPLICATION_NETWORK_MAX_PER_HOUR: int = 200
+    APPLICATION_CSV_MAX_ROWS: int = 5000
     TRUST_PROXY_HEADERS: bool = False
     TRUSTED_PROXY_CIDRS: str = "[]"
 
@@ -77,11 +83,18 @@ class Settings(BaseSettings):
                 )
         return value
 
-    def get_allowed_origins(self) -> List[str]:
+    def get_allowed_origins(self) -> list[str]:
         return json.loads(self.ALLOWED_ORIGINS)
 
-    def get_trusted_proxy_cidrs(self) -> List[str]:
+    def get_trusted_proxy_cidrs(self) -> list[str]:
         return json.loads(self.TRUSTED_PROXY_CIDRS)
+
+    def get_student_email_domains(self) -> list[str]:
+        return [
+            str(domain).strip().lower().lstrip("@")
+            for domain in json.loads(self.STUDENT_EMAIL_DOMAINS)
+            if str(domain).strip()
+        ]
 
     @field_validator("COOKIE_PATH_PREFIX", mode="before")
     @classmethod
@@ -129,6 +142,8 @@ class Settings(BaseSettings):
             raise ValueError(
                 "TRUST_PROXY_HEADERS=true이면 TRUSTED_PROXY_CIDRS를 지정해야 합니다."
             )
+        if not self.get_student_email_domains():
+            raise ValueError("운영 STUDENT_EMAIL_DOMAINS를 하나 이상 지정해야 합니다.")
         return self
 
     model_config = {"env_file": ".env", "extra": "ignore"}
