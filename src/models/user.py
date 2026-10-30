@@ -38,6 +38,7 @@ class User(TimestampMixin, Base):
     pending_email: Mapped[str | None] = mapped_column(String(255), unique=True, nullable=True)
     onboarding_completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     guide_seen_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    guide_hidden_until: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     withdrawn_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     failed_login_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)

@@ -1,4 +1,7 @@
+from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
+
 from fastapi import Response
 from fastapi.testclient import TestClient
 
@@ -41,6 +44,55 @@ def test_session_cookie_deletion_uses_public_route_prefix():
     cookies = response.headers.getlist("set-cookie")
     assert any("Path=/back-v1-0/api/v1;" in cookie for cookie in cookies)
     assert any("Path=/back-v1-0/api/v1/auth;" in cookie for cookie in cookies)
+
+
+def test_cleanup_orphan_supabase_auth_users_only_deletes_old_unlinked_accounts(db):
+    from src.models.user import User
+    from src.services import auth_service
+
+    protected = User(
+        auth_user_id="00000000-0000-0000-0000-000000000010",
+        student_id="PROTECTED01",
+        password_hash="unused",
+        name="보호계정",
+        email="protected@cju.ac.kr",
+        email_verified=True,
+    )
+    db.add(protected)
+    db.commit()
+
+    old = datetime.now(timezone.utc) - timedelta(days=8)
+    orphan = SimpleNamespace(
+        id="00000000-0000-0000-0000-000000000011",
+        email="orphan@cju.ac.kr",
+        created_at=old,
+        updated_at=old,
+        last_sign_in_at=None,
+    )
+    linked = SimpleNamespace(
+        id=protected.auth_user_id,
+        email=protected.email,
+        created_at=old,
+        updated_at=old,
+        last_sign_in_at=None,
+    )
+    admin_client = MagicMock()
+    admin_client.auth.admin.list_users.return_value = [orphan, linked]
+
+    with (
+        patch.object(settings, "SUPABASE_SERVICE_KEY", "test-service-key"),
+        patch(
+            "src.services.auth_service.get_supabase_admin_client",
+            return_value=admin_client,
+        ),
+    ):
+        deleted = auth_service.cleanup_orphan_supabase_auth_users(db)
+
+    assert deleted == 1
+    admin_client.auth.admin.delete_user.assert_called_once_with(
+        orphan.id,
+        should_soft_delete=False,
+    )
 
 
 # ── 회원가입 ───────────────────────────────────────────────────────────────────
@@ -158,6 +210,11 @@ class TestRegister:
             session=None,
         )
         auth_client.auth.verify_otp.return_value = MagicMock(user=auth_user)
+        link_result = {
+            "linked_application_ids": ["application-id"],
+            "linked_club_ids": ["club-id"],
+            "linked_count": 1,
+        }
 
         with (
             patch.object(settings, "SUPABASE_SERVICE_KEY", "test-secret"),
@@ -166,6 +223,10 @@ class TestRegister:
                 "src.services.auth_service.create_supabase_auth_client",
                 return_value=auth_client,
             ),
+            patch(
+                "src.routers.v1.auth.application_service.link_eligible_guest_applications",
+                return_value=link_result,
+            ) as link_guest,
         ):
             register = client.post("/api/v1/auth/register", json={
                 "student_id": self.STUDENT_ID,
@@ -186,8 +247,11 @@ class TestRegister:
             verified = client.post("/api/v1/auth/email/verify", json={
                 "email": "verify@example.com",
                 "token": "123456",
+                "link_guest_applications": True,
             })
             assert verified.status_code == 200
+            assert verified.json()["linked_guest_applications"] == 1
+            link_guest.assert_called_once()
 
         user = db.query(User).filter(User.student_id == self.STUDENT_ID).one()
         assert user.email == "verify@example.com"
@@ -198,6 +262,129 @@ class TestRegister:
             "token": "123456",
             "type": "email",
         })
+
+    def test_email_only_otp_then_verified_registration(self, client, db):
+        from sqlalchemy import select
+
+        from src.models.user import User
+        from src.services.audit_service import queue_audit_log as real_queue_audit_log
+
+        auth_user = MagicMock()
+        auth_user.id = "00000000-0000-0000-0000-000000000777"
+        auth_user.email = "preverify@example.com"
+        auth_client = MagicMock()
+        auth_client.auth.verify_otp.return_value = MagicMock(user=auth_user)
+        admin_client = MagicMock()
+        admin_client.auth.admin.get_user_by_id.return_value = MagicMock(user=auth_user)
+        audit_parent_checks: list[str] = []
+        link_result = {
+            "linked_application_ids": ["application-id"],
+            "linked_club_ids": ["club-id"],
+            "linked_count": 1,
+        }
+
+        def queue_audit_after_user_persisted(session, **kwargs):
+            actor_user_id = kwargs["actor_user_id"]
+            persisted_user_id = session.execute(
+                select(User.id).where(User.id == actor_user_id)
+            ).scalar_one_or_none()
+            assert persisted_user_id == actor_user_id
+            audit_parent_checks.append(actor_user_id)
+            return real_queue_audit_log(session, **kwargs)
+
+        with (
+            patch.object(settings, "SUPABASE_SERVICE_KEY", "test-secret"),
+            patch.object(settings, "SUPABASE_ANON_KEY", "test-publishable"),
+            patch(
+                "src.services.auth_service.create_supabase_auth_client",
+                return_value=auth_client,
+            ),
+            patch(
+                "src.services.auth_service.get_supabase_admin_client",
+                return_value=admin_client,
+            ),
+            patch(
+                "src.services.auth_service.queue_audit_log",
+                side_effect=queue_audit_after_user_persisted,
+            ),
+            patch(
+                "src.routers.v1.auth.application_service.link_eligible_guest_applications",
+                return_value=link_result,
+            ) as link_guest,
+        ):
+            requested = client.post(
+                "/api/v1/auth/email/request",
+                json={"email": "PreVerify@example.com"},
+            )
+            assert requested.status_code == 200
+            assert db.query(User).count() == 0
+
+            verified = client.post(
+                "/api/v1/auth/email/verify",
+                json={"email": "preverify@example.com", "token": "123456"},
+            )
+            assert verified.status_code == 200
+            proof = verified.json()["verification_token"]
+            assert proof
+
+            registered = client.post("/api/v1/auth/register", json={
+                "student_id": self.STUDENT_ID,
+                "name": "홍길동",
+                "email": "preverify@example.com",
+                "password": "test1234!",
+                "email_verification_token": proof,
+                "link_guest_applications": True,
+                **REGISTRATION_REQUIRED,
+            })
+
+        assert registered.status_code == 201, registered.text
+        assert registered.json()["email_verified"] is True
+        assert len(audit_parent_checks) == 1
+        link_guest.assert_called_once()
+        auth_client.auth.sign_in_with_otp.assert_called_once_with({
+            "email": "preverify@example.com",
+            "options": {"should_create_user": True},
+        })
+        admin_client.auth.admin.update_user_by_id.assert_called_once()
+
+    def test_registration_storage_failure_is_not_reported_as_duplicate(self, client):
+        from src.services.auth_service import RegistrationPersistenceError
+
+        with patch(
+            "src.routers.v1.auth.auth_service.register_user",
+            side_effect=RegistrationPersistenceError(
+                "회원가입 처리 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요."
+            ),
+        ):
+            response = client.post("/api/v1/auth/register", json={
+                "student_id": "2021999999",
+                "name": "홍길동",
+                "email": "storage-error@example.com",
+                "password": "test1234!",
+                **REGISTRATION_REQUIRED,
+            })
+
+        assert response.status_code == 500
+        assert response.json()["detail"] == (
+            "회원가입 처리 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요."
+        )
+
+    def test_email_otp_timeout_returns_retryable_service_error(self, client):
+        import httpx
+
+        with patch(
+            "src.services.auth_service.create_supabase_auth_client",
+        ) as create_auth_client:
+            create_auth_client.return_value.auth.sign_in_with_otp.side_effect = (
+                httpx.ReadTimeout("Supabase Auth response timed out")
+            )
+            response = client.post(
+                "/api/v1/auth/email/request",
+                json={"email": "timeout@cju.ac.kr"},
+            )
+
+        assert response.status_code == 503
+        assert "이메일이 이미 발송되었을 수 있으니" in response.json()["detail"]
 
     def test_resend_confirmation_is_rate_limited(self, client, db):
         auth_user = MagicMock()

@@ -25,6 +25,8 @@ class UserCreate(BaseModel):
     department: str = Field(..., min_length=1, max_length=100)
     password: str = Field(..., min_length=8, max_length=128)
     privacy_consent: PrivacyConsentCreate
+    email_verification_token: str | None = Field(None, min_length=20, max_length=4096)
+    link_guest_applications: bool = False
 
     @field_validator("name")
     @classmethod
@@ -75,11 +77,21 @@ class UserCreate(BaseModel):
 class EmailVerificationRequest(BaseModel):
     email: EmailStr
     token: str = Field(..., min_length=6, max_length=64)
+    link_guest_applications: bool = False
 
     @field_validator("email")
     @classmethod
     def normalize_email(cls, value: EmailStr) -> str:
         return str(value).strip().lower()
+
+
+class EmailOtpRequest(BaseModel):
+    email: EmailStr
+
+    @field_validator("email")
+    @classmethod
+    def validate_student_email(cls, value: EmailStr) -> str:
+        return UserCreate.normalize_email(value)
 
 
 class EmailResendRequest(BaseModel):
@@ -112,6 +124,11 @@ class EmailChangeVerificationRequest(BaseModel):
 
 class MessageResponse(BaseModel):
     message: str
+
+
+class EmailVerificationResponse(MessageResponse):
+    linked_guest_applications: int = 0
+    verification_token: str | None = None
 
 
 class PasswordChangeRequest(BaseModel):
@@ -147,6 +164,7 @@ class UserInfo(BaseModel):
     email_verified: bool
     onboarding_completed: bool = False
     guide_seen: bool = False
+    guide_hidden_until: datetime | None = None
     is_club_admin: bool = False
     platform_roles: list[str] = Field(default_factory=list)
 
@@ -172,6 +190,7 @@ class UserResponse(BaseModel):
 
 
 class UserProfileUpdate(BaseModel):
+    name: str | None = Field(None, min_length=1, max_length=50)
     phone: str | None = Field(None, min_length=9, max_length=20, pattern=r"^[0-9+(). -]+$")
     department: str | None = Field(None, max_length=100)
 
@@ -181,6 +200,13 @@ class UserProfileUpdate(BaseModel):
         if value is None:
             raise ValueError("전화번호는 비워둘 수 없습니다.")
         return UserCreate.normalize_phone(value)
+
+    @field_validator("name")
+    @classmethod
+    def normalize_name(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return UserCreate.validate_name(value)
 
     @field_validator("department")
     @classmethod

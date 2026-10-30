@@ -7,6 +7,7 @@ class PostCreate(BaseModel):
     title: str = Field(..., min_length=1, max_length=200)
     content: str = Field(..., min_length=1, max_length=50_000)
     is_anonymous: bool = False
+    is_notice: bool = False
 
 
 class PostUpdate(BaseModel):
@@ -78,6 +79,7 @@ class PostDetailResponse(BaseModel):
     is_anonymous: bool = False
     created_at: datetime
     is_author_president: bool = False
+    can_manage: bool = False
     comments: list[CommentResponse] = Field(default_factory=list)
 
     model_config = {"from_attributes": True}

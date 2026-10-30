@@ -1,19 +1,23 @@
-import json
 import calendar
+import json
 from datetime import datetime
+
 from sqlalchemy import or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
+from src.core.config import settings
 from src.models.application import Application, ApplicationAnswer, ApplicationForm
 from src.models.club import Club
 from src.models.club_member import ClubMember
 from src.models.user import User
-from src.schemas.application import ApplicationCreate, ApplicationUpdate, GuestApplicationCreate
-from src.core.config import settings
+from src.schemas.application import (
+    ApplicationCreate,
+    ApplicationUpdate,
+    GuestApplicationCreate,
+)
 from src.services.audit_service import queue_audit_log
 from src.utils.time import kst_today, utc_now_naive
-
 
 CLUB_PRESIDENT_APPLICATION_ERROR = "동아리 관리자는 본인 동아리에 신청할 수 없습니다."
 RECRUITMENT_CLOSED_ERROR = "모집이 마감된 동아리에는 지원할 수 없습니다."
@@ -318,7 +322,7 @@ def create_guest_application(db: Session, data: GuestApplicationCreate) -> dict:
         applicant_name=data.applicant_name,
         applicant_department=data.applicant_department,
         applicant_phone=data.applicant_phone,
-        applicant_email=str(data.applicant_email).lower(),
+        applicant_email=None,
         applicant_grade=data.applicant_grade,
         privacy_policy_version=data.privacy_policy_version,
         privacy_agreed_at=now,
@@ -493,7 +497,13 @@ def get_submitted_applications(db: Session, user: User) -> list[dict]:
     apps = (
         db.query(Application)
         .options(selectinload(Application.form).selectinload(ApplicationForm.club))
-        .filter(Application.user_id == user.id, Application.is_draft.is_(False))
+        .filter(
+            or_(
+                Application.user_id == user.id,
+                Application.linked_user_id == user.id,
+            ),
+            Application.is_draft.is_(False),
+        )
         .filter(Application.deleted_at.is_(None))
         .order_by(Application.submitted_at.desc())
         .all()
@@ -510,7 +520,10 @@ def get_submitted_application(db: Session, user: User, application_id: str) -> d
         )
         .filter(
             Application.id == application_id,
-            Application.user_id == user.id,
+            or_(
+                Application.user_id == user.id,
+                Application.linked_user_id == user.id,
+            ),
             Application.is_draft.is_(False),
             Application.deleted_at.is_(None),
         )
@@ -564,9 +577,25 @@ def _club_applications_query(
         ))
     if status_filter:
         query = query.filter(Application.status == status_filter)
-    if applicant_type:
-        query = query.filter(Application.applicant_type == applicant_type)
+    # 관리자 화면의 회원 구분은 제출 당시 유형이 아니라 현재 계정 연결 상태를 뜻한다.
+    # 비회원 신청서가 회원가입 후 연결되면 linked_user_id가 채워지므로 다음 조회부터
+    # 회원으로 분류한다. 원본 applicant_type은 감사·이력 보존을 위해 변경하지 않는다.
+    if applicant_type == "member":
+        query = query.filter(or_(
+            Application.user_id.is_not(None),
+            Application.linked_user_id.is_not(None),
+        ))
+    elif applicant_type == "guest":
+        query = query.filter(
+            Application.user_id.is_(None),
+            Application.linked_user_id.is_(None),
+        )
     return query
+
+
+def _current_applicant_type(app: Application) -> str:
+    """관리자에게 표시할 현재 회원 상태를 반환한다."""
+    return "member" if app.user_id or app.linked_user_id else "guest"
 
 
 def _to_admin_detail_dict(app: Application) -> dict:
@@ -584,7 +613,7 @@ def _to_admin_detail_dict(app: Application) -> dict:
         "applicant_phone": app.applicant_phone,
         "applicant_email": app.applicant_email,
         "applicant_grade": app.applicant_grade,
-        "applicant_type": app.applicant_type,
+        "applicant_type": _current_applicant_type(app),
         "answers": detail["answers"],
         "form_snapshot": detail["form_snapshot"],
     }
@@ -621,7 +650,7 @@ def get_club_applications(
             "applicant_phone": a.applicant_phone,
             "applicant_email": a.applicant_email,
             "applicant_grade": a.applicant_grade,
-            "applicant_type": a.applicant_type,
+            "applicant_type": _current_applicant_type(a),
         }
         for a in apps
     ]
@@ -687,7 +716,14 @@ def get_club_application(db: Session, club_id: str, application_id: str) -> dict
     return _to_admin_detail_dict(app)
 
 
-def update_application_status(db: Session, club_id: str, application_id: str, new_status: str) -> Application:
+def update_application_status(
+    db: Session,
+    club_id: str,
+    application_id: str,
+    new_status: str,
+    *,
+    allow_failed_to_pass: bool = False,
+) -> Application:
     """심사 결과 업데이트. passed 시 ClubMember 자동 등록."""
     app = (
         db.query(Application)
@@ -703,8 +739,12 @@ def update_application_status(db: Session, club_id: str, application_id: str, ne
     )
     if not app:
         raise LookupError("신청서를 찾을 수 없습니다.")
-    if app.status in ("passed", "failed"):
+    if app.status == "passed":
         raise ValueError("이미 최종 심사가 완료된 신청서입니다.")
+    if app.status == "failed" and not (
+        allow_failed_to_pass and new_status == "passed"
+    ):
+        raise ValueError("불합격 신청서는 동아리 회장만 합격으로 변경할 수 있습니다.")
 
     app.status = new_status
 
@@ -712,6 +752,19 @@ def update_application_status(db: Session, club_id: str, application_id: str, ne
         app.accepted_at = utc_now_naive()
         if app.applicant_type == "guest":
             app.link_expires_at = _add_months(app.accepted_at, 4)
+            if app.linked_user_id:
+                already = db.query(ClubMember).filter(
+                    ClubMember.club_id == club_id,
+                    ClubMember.user_id == app.linked_user_id,
+                    ClubMember.status == "active",
+                ).first()
+                if not already:
+                    db.add(ClubMember(
+                        club_id=club_id,
+                        user_id=app.linked_user_id,
+                        role="member",
+                        status="active",
+                    ))
         else:
             already = db.query(ClubMember).filter(
                 ClubMember.club_id == club_id,
@@ -741,7 +794,7 @@ def update_application_comment(
     )
     if not app:
         raise LookupError("신청서를 찾을 수 없습니다.")
-    if app.applicant_type == "guest":
+    if app.applicant_type == "guest" and not app.linked_user_id:
         raise ValueError("비회원 신청서에는 관리자 코멘트를 작성할 수 없습니다.")
     app.admin_comment = comment.strip() or None
     db.commit()
@@ -793,12 +846,14 @@ def link_eligible_guest_applications(db: Session, user: User) -> dict:
         .options(selectinload(Application.form))
         .filter(
             Application.applicant_type == "guest",
-            Application.status == "passed",
+            Application.is_draft.is_(False),
             Application.linked_user_id.is_(None),
             Application.deleted_at.is_(None),
-            Application.link_expires_at >= now,
+            or_(
+                Application.status != "passed",
+                Application.link_expires_at >= now,
+            ),
             Application.applicant_student_id == user.student_id,
-            Application.applicant_email == user.email.lower(),
         )
         .order_by(Application.id.asc())
         .with_for_update()
@@ -807,32 +862,32 @@ def link_eligible_guest_applications(db: Session, user: User) -> dict:
     matched = [
         app for app in candidates
         if app.applicant_name.strip() == user.name.strip()
-        and (app.applicant_department or "").strip() == (user.department or "").strip()
         and _normalized_phone(app.applicant_phone) == _normalized_phone(user.phone)
     ]
     if not matched:
-        raise LookupError("연결 가능한 합격 비회원 신청서를 찾을 수 없습니다.")
+        raise LookupError("연결 가능한 비회원 신청서를 찾을 수 없습니다.")
 
     linked_ids: list[str] = []
     club_ids: list[str] = []
     for app in matched:
         club_id = app.form.club_id
-        membership = db.query(ClubMember).filter(
-            ClubMember.club_id == club_id,
-            ClubMember.user_id == user.id,
-        ).with_for_update().first()
-        if membership:
-            membership.status = "active"
-            membership.left_at = None
-            if membership.role not in {"president", "admin"}:
-                membership.role = "member"
-        else:
-            db.add(ClubMember(
-                club_id=club_id,
-                user_id=user.id,
-                role="member",
-                status="active",
-            ))
+        if app.status == "passed":
+            membership = db.query(ClubMember).filter(
+                ClubMember.club_id == club_id,
+                ClubMember.user_id == user.id,
+            ).with_for_update().first()
+            if membership:
+                membership.status = "active"
+                membership.left_at = None
+                if membership.role not in {"president", "admin"}:
+                    membership.role = "member"
+            else:
+                db.add(ClubMember(
+                    club_id=club_id,
+                    user_id=user.id,
+                    role="member",
+                    status="active",
+                ))
         app.linked_user_id = user.id
         app.linked_at = now
         linked_ids.append(app.id)

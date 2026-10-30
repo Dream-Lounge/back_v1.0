@@ -30,7 +30,11 @@ def _post_item(post: Post) -> dict:
     }
 
 
-def _post_detail(post: Post) -> dict:
+def _post_detail(
+    post: Post,
+    viewer_user_id: str | None = None,
+    is_platform_editor: bool = False,
+) -> dict:
     author_id, author_name = _author(post)
     return {
         "id": post.id,
@@ -45,6 +49,10 @@ def _post_detail(post: Post) -> dict:
         "is_anonymous": post.is_anonymous,
         "created_at": post.created_at,
         "is_author_president": False,
+        "can_manage": bool(
+            viewer_user_id
+            and (post.author_id == viewer_user_id or is_platform_editor)
+        ),
         "comments": [
             {
                 "id": comment.id,
@@ -83,7 +91,13 @@ def list_posts(
     }
 
 
-def get_post(db: Session, scope: str, post_id: str) -> dict | None:
+def get_post(
+    db: Session,
+    scope: str,
+    post_id: str,
+    viewer_user_id: str | None = None,
+    is_platform_editor: bool = False,
+) -> dict | None:
     post = db.query(Post).options(
         selectinload(Post.author),
         selectinload(Post.comments).selectinload(Comment.author),
@@ -93,7 +107,7 @@ def get_post(db: Session, scope: str, post_id: str) -> dict | None:
         Post.board_scope == scope,
         Post.is_deleted.is_(False),
     ).first()
-    return _post_detail(post) if post else None
+    return _post_detail(post, viewer_user_id, is_platform_editor) if post else None
 
 
 def create_post(
@@ -114,7 +128,7 @@ def create_post(
     db.add(post)
     db.commit()
     db.refresh(post)
-    return get_post(db, scope, post.id)
+    return get_post(db, scope, post.id, user.id, scope == "service")
 
 
 def update_post(
@@ -137,7 +151,7 @@ def update_post(
     for field, value in data.model_dump(exclude_unset=True).items():
         setattr(post, field, value)
     db.commit()
-    return get_post(db, scope, post.id)
+    return get_post(db, scope, post.id, user.id, is_platform_editor)
 
 
 def delete_post(

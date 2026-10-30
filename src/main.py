@@ -1,17 +1,53 @@
-from contextlib import asynccontextmanager
+import asyncio
+import logging
+from contextlib import asynccontextmanager, suppress
+
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from sqlalchemy import text
+
 from src.core.config import settings
-from src.db.session import engine
+from src.db.session import SessionLocal, engine
 from src.routers.v1.router import router as v1_router
+from src.services.auth_service import cleanup_orphan_supabase_auth_users
 from src.utils.device import DEVICE_COOKIE, resolve_device_id
+
+logger = logging.getLogger(__name__)
+
+
+def _run_auth_orphan_cleanup() -> None:
+    db = SessionLocal()
+    try:
+        deleted = cleanup_orphan_supabase_auth_users(db)
+        if deleted:
+            logger.info("가입 중단 Supabase Auth 계정 %d개를 정리했습니다.", deleted)
+    except Exception:
+        logger.exception("가입 중단 Supabase Auth 계정 정리 작업에 실패했습니다.")
+    finally:
+        db.close()
+
+
+async def _auth_orphan_cleanup_loop() -> None:
+    # 배포 직후 readiness와 트래픽 수신을 방해하지 않도록 첫 실행을 늦춘다.
+    await asyncio.sleep(60)
+    while True:
+        await asyncio.to_thread(_run_auth_orphan_cleanup)
+        await asyncio.sleep(max(settings.AUTH_ORPHAN_CLEANUP_INTERVAL_SECONDS, 3600))
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    yield
+    cleanup_task = None
+    if settings.AUTH_ORPHAN_CLEANUP_ENABLED and settings.SUPABASE_SERVICE_KEY:
+        cleanup_task = asyncio.create_task(_auth_orphan_cleanup_loop())
+    try:
+        yield
+    finally:
+        if cleanup_task:
+            cleanup_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await cleanup_task
 
 
 app = FastAPI(

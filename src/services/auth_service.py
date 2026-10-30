@@ -2,15 +2,21 @@ import hashlib
 import hmac
 import logging
 import secrets
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
+from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from supabase_auth.errors import AuthApiError
 
 from src.core.config import settings
-from src.core.security import hash_password, verify_password
+from src.core.security import (
+    create_email_verification_token,
+    decode_email_verification_token,
+    hash_password,
+    verify_password,
+)
 from src.models.club_member import ClubMember
 from src.models.user import (
     AuthRateLimit,
@@ -36,6 +42,26 @@ ACTIVE_PRESIDENT_WITHDRAWAL_ERROR = (
 
 class RateLimitExceeded(ValueError):
     """요청 횟수 제한 초과."""
+
+
+class RegistrationPersistenceError(RuntimeError):
+    """중복이 아닌 회원가입 DB 저장 실패."""
+
+
+def _registration_integrity_message(exc: IntegrityError) -> str | None:
+    """알려진 회원 고유값 충돌만 사용자에게 중복 오류로 안내한다."""
+    original = getattr(exc, "orig", None)
+    diagnostic = getattr(original, "diag", None)
+    constraint_name = str(getattr(diagnostic, "constraint_name", "") or "").lower()
+    error_text = f"{constraint_name} {original or exc}".lower()
+
+    if "auth_user_id" in error_text:
+        return "이메일 인증 계정이 이미 다른 회원과 연결되어 있습니다."
+    if "student_id" in error_text:
+        return "이미 가입된 학번입니다."
+    if "users_email" in error_text or "email_key" in error_text:
+        return "이미 사용 중인 이메일입니다."
+    return None
 
 
 def login_lock_message() -> str:
@@ -284,7 +310,7 @@ def register_user(db: Session, data: UserCreate) -> User:
     if data.privacy_consent.policy_version != settings.PRIVACY_POLICY_VERSION:
         raise ValueError("최신 개인정보 수집 동의문을 확인해주세요.")
     if db.query(User).filter(User.student_id == data.student_id).first():
-        raise ValueError("이미 가입된 회원 정보입니다.")
+        raise ValueError("이미 가입된 학번입니다.")
     if db.query(User).filter(User.email == normalized_email).first():
         raise ValueError("이미 사용 중인 이메일입니다.")
 
@@ -306,40 +332,62 @@ def register_user(db: Session, data: UserCreate) -> User:
         email_verified_at=None,
     )
     auth_user_id: str | None = None
+    auth_user_created_here = False
     try:
         if settings.SUPABASE_SERVICE_KEY and settings.SUPABASE_ANON_KEY:
             internal_password = _supabase_password(user_id, data.password)
-            try:
-                created = create_supabase_auth_client().auth.sign_up({
-                    "email": user.email,
-                    "password": internal_password,
-                    "options": {
-                        "data": {
+            if data.email_verification_token:
+                verified_email, auth_user_id = decode_email_verification_token(
+                    data.email_verification_token
+                )
+                if verified_email != normalized_email:
+                    raise ValueError("인증한 이메일과 회원가입 이메일이 일치하지 않습니다.")
+                auth_user = get_supabase_admin_client().auth.admin.get_user_by_id(
+                    auth_user_id
+                ).user
+                if not auth_user or str(auth_user.email or "").lower() != normalized_email:
+                    raise ValueError("인증한 이메일 계정을 찾을 수 없습니다.")
+                get_supabase_admin_client().auth.admin.update_user_by_id(
+                    auth_user_id,
+                    {
+                        "password": internal_password,
+                        "user_metadata": {
                             "student_id": user.student_id,
                             "name": user.name,
-                        }
+                        },
                     },
-                })
-                if not created.user:
-                    raise RuntimeError("이메일 인증 계정을 생성하지 못했습니다.")
-                if getattr(created.user, "identities", None) == []:
-                    # Confirm email이 켜진 Supabase는 계정 열거 방지를 위해
-                    # 중복 가입에도 가짜 사용자 객체를 반환할 수 있다.
-                    raise ValueError("이미 사용 중인 이메일입니다.")
-                # Confirm email이 꺼져 있으면 Supabase가 즉시 세션을 반환한다.
-                # 운영에서 인증이 우회되지 않도록 설정 오류로 처리한다.
-                if created.session is not None:
-                    get_supabase_admin_client().auth.admin.delete_user(
-                        str(created.user.id), should_soft_delete=False
-                    )
-                    raise RuntimeError(
-                        "Supabase Authentication에서 Confirm email을 활성화해주세요."
-                    )
-                auth_user_id = str(created.user.id)
-            except AuthApiError as exc:
-                if exc.code in {"email_exists", "user_already_exists"}:
-                    raise ValueError("이미 사용 중인 이메일입니다.") from exc
-                raise
+                )
+                user.email_verified = True
+                user.email_verified_at = utc_now_naive()
+            else:
+                try:
+                    created = create_supabase_auth_client().auth.sign_up({
+                        "email": user.email,
+                        "password": internal_password,
+                        "options": {
+                            "data": {
+                                "student_id": user.student_id,
+                                "name": user.name,
+                            }
+                        },
+                    })
+                    if not created.user:
+                        raise RuntimeError("이메일 인증 계정을 생성하지 못했습니다.")
+                    if getattr(created.user, "identities", None) == []:
+                        raise ValueError("이미 사용 중인 이메일입니다.")
+                    if created.session is not None:
+                        get_supabase_admin_client().auth.admin.delete_user(
+                            str(created.user.id), should_soft_delete=False
+                        )
+                        raise RuntimeError(
+                            "Supabase Authentication에서 Confirm email을 활성화해주세요."
+                        )
+                    auth_user_id = str(created.user.id)
+                    auth_user_created_here = True
+                except AuthApiError as exc:
+                    if exc.code in {"email_exists", "user_already_exists"}:
+                        raise ValueError("이미 사용 중인 이메일입니다.") from exc
+                    raise
 
             user.auth_user_id = auth_user_id
         else:
@@ -348,6 +396,10 @@ def register_user(db: Session, data: UserCreate) -> User:
             user.email_verified = True
             user.email_verified_at = utc_now_naive()
         db.add(user)
+        # audit_logs와 privacy_consents가 users를 FK로 참조한다. SQLAlchemy가
+        # 서로 독립된 모델의 INSERT 순서를 추론하도록 두지 말고 부모 행을
+        # 먼저 확정해 PostgreSQL의 즉시 FK 검사를 항상 통과시킨다.
+        db.flush()
         db.add(
             PrivacyConsent(
                 user_id=user.id,
@@ -368,15 +420,21 @@ def register_user(db: Session, data: UserCreate) -> User:
         return user
     except IntegrityError as exc:
         db.rollback()
-        if auth_user_id:
+        if auth_user_id and auth_user_created_here:
             try:
                 get_supabase_admin_client().auth.admin.delete_user(auth_user_id)
             except Exception:
                 logger.exception("DB 가입 충돌 후 Supabase Auth 계정 정리에 실패했습니다.")
-        raise ValueError("이미 가입된 회원 정보입니다.") from exc
+        message = _registration_integrity_message(exc)
+        if message:
+            raise ValueError(message) from exc
+        logger.exception("중복이 아닌 회원가입 DB 저장 오류가 발생했습니다.")
+        raise RegistrationPersistenceError(
+            "회원가입 처리 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요."
+        ) from exc
     except Exception:
         db.rollback()
-        if auth_user_id:
+        if auth_user_id and auth_user_created_here:
             try:
                 get_supabase_admin_client().auth.admin.delete_user(auth_user_id)
             except Exception:
@@ -414,6 +472,51 @@ def verify_signup_email(db: Session, email: str, token: str) -> User:
     db.commit()
     db.refresh(user)
     return user
+
+
+def request_signup_email_otp(
+    db: Session,
+    email: str,
+    client_ip: str | None = None,
+    device_id: str | None = None,
+) -> None:
+    """회원정보를 받기 전에 Supabase SMTP를 통해 이메일 OTP만 발송한다."""
+    normalized_email = email.strip().lower()
+    if db.query(User).filter(User.email == normalized_email).first():
+        raise ValueError("이미 사용 중인 이메일입니다.")
+    since = utc_now_naive() - timedelta(seconds=settings.EMAIL_VERIFICATION_RESEND_SECONDS)
+    subject_count, device_count, _ = _recent_event_count(
+        db, "signup_email_otp", normalized_email, since, client_ip, device_id
+    )
+    if subject_count or device_count:
+        db.rollback()
+        raise RateLimitExceeded(
+            f"인증번호는 {settings.EMAIL_VERIFICATION_RESEND_SECONDS}초 후 다시 요청해주세요."
+        )
+    db.rollback()
+    create_supabase_auth_client().auth.sign_in_with_otp({
+        "email": normalized_email,
+        "options": {"should_create_user": True},
+    })
+    _record_event(db, "signup_email_otp", normalized_email, client_ip, device_id)
+    db.commit()
+
+
+def verify_preregistration_email(db: Session, email: str, token: str) -> str:
+    """가입 전 OTP를 확인하고 15분간 유효한 서버 서명 증명을 발급한다."""
+    normalized_email = email.strip().lower()
+    if db.query(User).filter(User.email == normalized_email).first():
+        raise ValueError("이미 사용 중인 이메일입니다.")
+    db.rollback()
+    response = create_supabase_auth_client().auth.verify_otp({
+        "email": normalized_email,
+        "token": token.strip(),
+        "type": "email",
+    })
+    auth_user = response.user
+    if not auth_user:
+        raise ValueError("인증번호가 올바르지 않거나 만료되었습니다.")
+    return create_email_verification_token(normalized_email, str(auth_user.id))
 
 
 def resend_signup_email(
@@ -455,7 +558,7 @@ def resend_signup_email(
 
 
 def update_profile(db: Session, user: User, data: UserProfileUpdate) -> User:
-    """학번과 이름은 고정하고 사용자가 관리 가능한 개인정보만 변경한다."""
+    """학번은 고정하고 이름·학과·전화번호를 변경한다."""
     changed: list[str] = []
     for field, value in data.model_dump(exclude_unset=True).items():
         if getattr(user, field) != value:
@@ -523,6 +626,15 @@ def mark_guide_seen(db: Session, user: User) -> User:
         user.guide_seen_at = utc_now_naive()
         db.commit()
         db.refresh(user)
+    return user
+
+
+def hide_guide_today(db: Session, user: User) -> User:
+    from src.utils.time import next_kst_midnight_utc_naive
+
+    user.guide_hidden_until = next_kst_midnight_utc_naive()
+    db.commit()
+    db.refresh(user)
     return user
 
 
@@ -696,6 +808,97 @@ def cleanup_stale_unverified_users(db: Session, limit: int = 100) -> int:
         deleted += 1
     db.commit()
     return deleted
+
+
+def _auth_created_at(value) -> datetime | None:
+    """Supabase Auth 사용자 생성 시각을 naive UTC datetime으로 정규화한다."""
+    if isinstance(value, datetime):
+        return value.astimezone(timezone.utc).replace(tzinfo=None) if value.tzinfo else value
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed.astimezone(timezone.utc).replace(tzinfo=None) if parsed.tzinfo else parsed
+
+
+def cleanup_orphan_supabase_auth_users(db: Session, limit: int | None = None) -> int:
+    """로컬 회원이 없는 오래된 가입 중단 Supabase Auth 계정을 정리한다.
+
+    OTP 발송 시 만들어졌지만 최종 회원가입을 완료하지 않은 Auth 사용자만
+    대상으로 한다. Auth ID와 이메일 중 하나라도 로컬 사용자와 연결돼 있으면
+    삭제하지 않는다.
+    """
+    if not settings.SUPABASE_SERVICE_KEY:
+        return 0
+
+    bind = db.get_bind()
+    if bind.dialect.name == "postgresql":
+        # 두 컨테이너 중 하나만 수행한다. 트랜잭션 종료 시 자동 해제된다.
+        acquired = db.execute(
+            text("SELECT pg_try_advisory_xact_lock(:lock_id)"),
+            {"lock_id": 4_483_141_030_001},
+        ).scalar()
+        if not acquired:
+            db.rollback()
+            return 0
+
+    batch_size = max(
+        1,
+        min(limit or settings.AUTH_ORPHAN_CLEANUP_BATCH_SIZE, 500),
+    )
+    cutoff = utc_now_naive() - timedelta(days=settings.UNVERIFIED_ACCOUNT_RETENTION_DAYS)
+    local_identities = db.query(User.auth_user_id, User.email).all()
+    local_auth_ids = {str(auth_id) for auth_id, _ in local_identities if auth_id}
+    local_emails = {str(email).strip().lower() for _, email in local_identities if email}
+    allowed_domains = set(settings.get_student_email_domains())
+    admin = get_supabase_admin_client().auth.admin
+    deleted = 0
+
+    try:
+        for page in range(1, 101):
+            auth_users = admin.list_users(page=page, per_page=1000)
+            for auth_user in auth_users:
+                auth_user_id = str(getattr(auth_user, "id", "") or "")
+                email = str(getattr(auth_user, "email", "") or "").strip().lower()
+                activity_times = [
+                    value
+                    for value in (
+                        _auth_created_at(getattr(auth_user, "created_at", None)),
+                        _auth_created_at(getattr(auth_user, "updated_at", None)),
+                        _auth_created_at(getattr(auth_user, "last_sign_in_at", None)),
+                    )
+                    if value is not None
+                ]
+                last_activity_at = max(activity_times) if activity_times else None
+                domain = email.rsplit("@", 1)[-1] if "@" in email else ""
+                if (
+                    not auth_user_id
+                    or not email
+                    or domain not in allowed_domains
+                    or auth_user_id in local_auth_ids
+                    or email in local_emails
+                    or last_activity_at is None
+                    or last_activity_at >= cutoff
+                ):
+                    continue
+                try:
+                    admin.delete_user(auth_user_id, should_soft_delete=False)
+                except Exception:
+                    logger.exception("가입 중단 Supabase Auth 계정 정리에 실패했습니다.")
+                    continue
+                deleted += 1
+                if deleted >= batch_size:
+                    db.commit()
+                    return deleted
+            if len(auth_users) < 1000:
+                break
+        db.commit()
+        return deleted
+    except Exception:
+        db.rollback()
+        raise
 
 
 def _refresh_token_digest(token: str) -> str:
@@ -987,5 +1190,5 @@ def withdraw_user(db: Session, user: User, access_token: str | None = None) -> N
         db.commit()
     except Exception as exc:
         db.rollback()
-        logger.error("회원탈퇴 처리 중 오류가 발생했습니다.", exc_info=True)
+        logger.exception("회원탈퇴 처리 중 오류가 발생했습니다.")
         raise RuntimeError("회원탈퇴 처리에 실패했습니다.") from exc

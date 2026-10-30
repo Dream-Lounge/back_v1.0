@@ -1,4 +1,4 @@
-from pydantic import BaseModel, EmailStr, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from typing import Optional, List, Literal
 from datetime import datetime
 
@@ -34,7 +34,6 @@ class GuestApplicationCreate(BaseModel):
     applicant_name: str = Field(..., min_length=1, max_length=50)
     applicant_department: str = Field(..., min_length=1, max_length=100)
     applicant_phone: str = Field(..., min_length=9, max_length=20, pattern=r"^[0-9+(). -]+$")
-    applicant_email: EmailStr
     applicant_grade: Optional[str] = Field(None, pattern=r"^(?:[1-6])?$")
     privacy_consent: bool
     guest_notice_consent: bool
@@ -48,16 +47,6 @@ class GuestApplicationCreate(BaseModel):
         if not cleaned:
             raise ValueError("필수 신청자 정보를 입력해주세요.")
         return cleaned
-
-    @field_validator("applicant_email")
-    @classmethod
-    def validate_student_email(cls, value: EmailStr) -> str:
-        from src.core.config import settings
-
-        email = str(value).strip().lower()
-        if email.rsplit("@", 1)[-1] not in settings.get_student_email_domains():
-            raise ValueError("청주대학교 학생 이메일만 사용할 수 있습니다.")
-        return email
 
     @field_validator("applicant_phone")
     @classmethod

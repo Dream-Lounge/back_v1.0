@@ -49,10 +49,13 @@ def create_post(
     db: Session = Depends(get_db),
     current_user=Depends(require_club_member),
 ):
-    """게시글 작성. 회장이 작성하면 자동으로 공지 처리됩니다."""
-    return post_service.serialize_post(
-        post_service.create_post(db, club_id, current_user, body)
-    )
+    """게시글 작성. 회장/관리자는 공지 여부를 선택할 수 있습니다."""
+    try:
+        return post_service.serialize_post(
+            post_service.create_post(db, club_id, current_user, body)
+        )
+    except PermissionError as e:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e))
 
 
 @router.get("/{club_id}/posts/{post_id}", response_model=PostDetailResponse)

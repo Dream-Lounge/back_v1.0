@@ -1,5 +1,6 @@
 import logging
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.security import HTTPAuthorizationCredentials
 from sqlalchemy.exc import OperationalError as DBOperationalError
@@ -10,11 +11,14 @@ from src.core.config import settings
 from src.core.dependencies import bearer, get_current_user, is_designated_club_admin
 from src.core.security import create_access_token
 from src.db.session import get_db
+from src.models.user import User
 from src.schemas.user import (
     EmailChangeRequest,
     EmailChangeVerificationRequest,
+    EmailOtpRequest,
     EmailResendRequest,
     EmailVerificationRequest,
+    EmailVerificationResponse,
     LoginRequest,
     LogoutRequest,
     MessageResponse,
@@ -28,7 +32,7 @@ from src.schemas.user import (
     UserProfileUpdate,
     UserResponse,
 )
-from src.services import auth_service
+from src.services import application_service, auth_service
 from src.utils.client_ip import get_rate_limit_client_ip
 from src.utils.device import request_device_id
 
@@ -50,6 +54,7 @@ def _user_info(db: Session, user) -> UserInfo:
         email_verified=user.email_verified,
         onboarding_completed=user.onboarding_completed_at is not None,
         guide_seen=user.guide_seen_at is not None,
+        guide_hidden_until=user.guide_hidden_until,
         is_club_admin=is_designated_club_admin(db, user.id),
         platform_roles=auth_service.get_active_platform_roles(db, user.id),
     )
@@ -109,10 +114,27 @@ def register(
             _get_device_id(request),
         )
         user = auth_service.register_user(db, body)
+        if body.email_verification_token and body.link_guest_applications:
+            try:
+                application_service.link_eligible_guest_applications(db, user)
+            except LookupError:
+                application_service.record_guest_link_failure(
+                    db, user, "eligible_application_not_found"
+                )
+            except ValueError:
+                application_service.record_guest_link_failure(
+                    db, user, "already_linked_or_conflict"
+                )
     except auth_service.RateLimitExceeded as e:
         raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail=str(e))
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    except auth_service.RegistrationPersistenceError as e:
+        logger.error("회원가입 DB 저장 실패: %s", e)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(e),
+        )
     except (AuthApiError, RuntimeError) as e:
         logger.error("Supabase Auth 회원 생성 실패: %s", e)
         raise HTTPException(
@@ -128,11 +150,20 @@ def register(
     return user
 
 
-@router.post("/email/verify", response_model=MessageResponse)
+@router.post("/email/verify", response_model=EmailVerificationResponse)
 def verify_email(body: EmailVerificationRequest, db: Session = Depends(get_db)):
     """이메일로 받은 6자리 OTP를 확인하고 계정을 활성화합니다."""
     try:
-        auth_service.verify_signup_email(db, str(body.email), body.token)
+        existing_user = db.query(User).filter(User.email == str(body.email)).first()
+        db.rollback()
+        if existing_user:
+            user = auth_service.verify_signup_email(db, str(body.email), body.token)
+            verification_token = None
+        else:
+            user = None
+            verification_token = auth_service.verify_preregistration_email(
+                db, str(body.email), body.token
+            )
     except AuthApiError as e:
         logger.info("이메일 인증 실패: code=%s", e.code)
         raise HTTPException(
@@ -141,7 +172,67 @@ def verify_email(body: EmailVerificationRequest, db: Session = Depends(get_db)):
         )
     except (ValueError, RuntimeError) as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
-    return MessageResponse(message="이메일 인증이 완료되었습니다. 로그인해주세요.")
+    linked_count = 0
+    if user is not None and body.link_guest_applications:
+        try:
+            result = application_service.link_eligible_guest_applications(db, user)
+            linked_count = result["linked_count"]
+        except LookupError:
+            application_service.record_guest_link_failure(
+                db, user, "eligible_application_not_found"
+            )
+        except ValueError:
+            application_service.record_guest_link_failure(
+                db, user, "already_linked_or_conflict"
+            )
+    message = (
+        "이메일 인증이 완료되었습니다. 나머지 정보를 입력해 회원가입을 완료해주세요."
+        if user is None
+        else "이메일 인증이 완료되었습니다. 로그인해주세요."
+    )
+    if linked_count:
+        message = f"이메일 인증과 비회원 지원서 {linked_count}건 연결이 완료되었습니다. 로그인해주세요."
+    return EmailVerificationResponse(
+        message=message,
+        linked_guest_applications=linked_count,
+        verification_token=verification_token,
+    )
+
+
+@router.post("/email/request", response_model=MessageResponse)
+def request_email_otp(
+    body: EmailOtpRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    """다른 회원정보 없이 학교 이메일로 6자리 가입 OTP를 발송합니다."""
+    try:
+        auth_service.request_signup_email_otp(
+            db,
+            str(body.email),
+            get_rate_limit_client_ip(request),
+            _get_device_id(request),
+        )
+    except auth_service.RateLimitExceeded as e:
+        raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    except httpx.TimeoutException:
+        logger.warning("Supabase 가입 OTP 발송 응답 시간이 초과되었습니다.")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=(
+                "인증 서버 응답이 지연되고 있습니다. 이메일이 이미 발송되었을 수 있으니 "
+                "받은편지함을 확인한 뒤 잠시 후 다시 시도해주세요."
+            ),
+        )
+    except (AuthApiError, RuntimeError) as e:
+        logger.warning("Supabase 가입 OTP 발송 실패: %s", e)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="인증번호를 발송할 수 없습니다. 잠시 후 다시 시도해주세요.",
+        )
+    return MessageResponse(message="학교 이메일로 6자리 인증번호를 발송했습니다.")
 
 
 @router.post("/email/resend", response_model=MessageResponse)
@@ -392,6 +483,14 @@ def mark_guide_seen(
     db: Session = Depends(get_db), current_user=Depends(get_current_user)
 ):
     return _user_info(db, auth_service.mark_guide_seen(db, current_user))
+
+
+@router.post("/me/guide-hide-today", response_model=UserInfo)
+def hide_guide_today(
+    db: Session = Depends(get_db), current_user=Depends(get_current_user)
+):
+    """한국시간 기준 다음 날 00:00까지 이용 가이드를 숨긴다."""
+    return _user_info(db, auth_service.hide_guide_today(db, current_user))
 
 
 @router.post("/password/change", status_code=status.HTTP_204_NO_CONTENT)

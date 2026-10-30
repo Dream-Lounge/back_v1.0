@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 
 from src.core.dependencies import (
     get_current_user,
+    get_optional_current_user,
     get_platform_roles,
     require_platform_editor,
 )
@@ -93,7 +94,6 @@ def list_global_posts(
     size: int = Query(20, ge=1, le=100),
     search: str | None = Query(None, max_length=100),
     db: Session = Depends(get_db),
-    current_user=Depends(get_current_user),
 ):
     return board_service.list_posts(db, "global", page, size, search)
 
@@ -111,9 +111,15 @@ def create_global_post(
 def get_global_post(
     post_id: str,
     db: Session = Depends(get_db),
-    current_user=Depends(get_current_user),
+    current_user=Depends(get_optional_current_user),
 ):
-    post = board_service.get_post(db, "global", post_id)
+    post = board_service.get_post(
+        db,
+        "global",
+        post_id,
+        current_user.id if current_user else None,
+        _is_editor(db, current_user.id) if current_user else False,
+    )
     if not post:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="게시글을 찾을 수 없습니다.")
     return post

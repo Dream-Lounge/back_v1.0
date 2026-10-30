@@ -500,6 +500,105 @@ class TestApplicationReview:
         )
         assert resp.status_code == 403
 
+    @pytest.mark.parametrize(
+        ("move_to_pending_first", "final_status"),
+        ((False, "passed"), (False, "failed"), (True, "passed"), (True, "failed")),
+    )
+    def test_club_admin_can_review_submitted_or_pending_application(
+        self,
+        client,
+        db,
+        setup,
+        submitted_app,
+        move_to_pending_first,
+        final_status,
+    ):
+        from src.models.club_member import ClubMember
+        from src.models.user import User
+
+        user = db.query(User).filter(User.student_id == "2021000001").one()
+        db.add(
+            ClubMember(
+                club_id=setup["club_id"],
+                user_id=user.id,
+                role="admin",
+                status="active",
+            )
+        )
+        db.commit()
+
+        if move_to_pending_first:
+            pending = client.patch(
+                f"/api/v1/clubs/{setup['club_id']}/applications/"
+                f"{submitted_app['id']}/status",
+                headers=setup["user_headers"],
+                json={"status": "pending"},
+            )
+            assert pending.status_code == 200
+
+        response = client.patch(
+            f"/api/v1/clubs/{setup['club_id']}/applications/"
+            f"{submitted_app['id']}/status",
+            headers=setup["user_headers"],
+            json={"status": final_status},
+        )
+        assert response.status_code == 200
+        assert response.json()["status"] == final_status
+
+    def test_president_can_change_failed_application_to_passed(
+        self, client, setup, submitted_app
+    ):
+        failed = client.patch(
+            f"/api/v1/clubs/{setup['club_id']}/applications/"
+            f"{submitted_app['id']}/status",
+            headers=setup["president_headers"],
+            json={"status": "failed"},
+        )
+        assert failed.status_code == 200
+
+        passed = client.patch(
+            f"/api/v1/clubs/{setup['club_id']}/applications/"
+            f"{submitted_app['id']}/status",
+            headers=setup["president_headers"],
+            json={"status": "passed"},
+        )
+        assert passed.status_code == 200
+        assert passed.json()["status"] == "passed"
+
+    def test_club_admin_cannot_reopen_failed_application(
+        self, client, db, setup, submitted_app
+    ):
+        from src.models.club_member import ClubMember
+        from src.models.user import User
+
+        user = db.query(User).filter(User.student_id == "2021000001").one()
+        db.add(
+            ClubMember(
+                club_id=setup["club_id"],
+                user_id=user.id,
+                role="admin",
+                status="active",
+            )
+        )
+        db.commit()
+        client.patch(
+            f"/api/v1/clubs/{setup['club_id']}/applications/"
+            f"{submitted_app['id']}/status",
+            headers=setup["president_headers"],
+            json={"status": "failed"},
+        )
+
+        response = client.patch(
+            f"/api/v1/clubs/{setup['club_id']}/applications/"
+            f"{submitted_app['id']}/status",
+            headers=setup["user_headers"],
+            json={"status": "passed"},
+        )
+        assert response.status_code == 400
+        assert response.json()["detail"] == (
+            "불합격 신청서는 동아리 회장만 합격으로 변경할 수 있습니다."
+        )
+
     def test_review_sends_notification(self, client, db, setup, submitted_app):
         from src.models.notification import Notification
         from src.models.user import User
@@ -569,12 +668,12 @@ class TestPostBoard:
         db.commit()
         return setup
 
-    def test_president_post_is_notice(self, client, setup):
-        """회장이 작성하면 자동 공지."""
+    def test_president_can_choose_notice(self, client, setup):
+        """회장은 공지 여부를 직접 선택한다."""
         resp = client.post(
             f"/api/v1/clubs/{setup['club_id']}/posts",
             headers=setup["president_headers"],
-            json={"title": "공지", "content": "내용"},
+            json={"title": "공지", "content": "내용", "is_notice": True},
         )
         assert resp.status_code == 201
         assert resp.json()["is_notice"] is True
@@ -590,11 +689,19 @@ class TestPostBoard:
         assert resp.json()["is_notice"] is False
         assert resp.json()["post_type"] == "general"
 
+    def test_member_cannot_create_notice(self, client, member_setup):
+        resp = client.post(
+            f"/api/v1/clubs/{member_setup['club_id']}/posts",
+            headers=member_setup["user_headers"],
+            json={"title": "권한 없는 공지", "content": "내용", "is_notice": True},
+        )
+        assert resp.status_code == 403
+
     def test_list_posts(self, client, member_setup):
         client.post(
             f"/api/v1/clubs/{member_setup['club_id']}/posts",
             headers=member_setup["president_headers"],
-            json={"title": "공지1", "content": "내용"},
+            json={"title": "공지1", "content": "내용", "is_notice": True},
         )
         client.post(
             f"/api/v1/clubs/{member_setup['club_id']}/posts",
@@ -734,7 +841,7 @@ class TestPostBoard:
         client.post(
             f"/api/v1/clubs/{member_setup['club_id']}/posts",
             headers=member_setup["president_headers"],
-            json={"title": "공지!", "content": "내용"},
+            json={"title": "공지!", "content": "내용", "is_notice": True},
         )
         notis = db.query(Notification).filter(
             Notification.noti_type == "new_notice",

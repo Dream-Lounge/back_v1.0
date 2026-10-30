@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from src.models.club import Club
+from src.models.club_member import ClubMember
 from src.db.session import get_db
 from src.core.dependencies import get_current_user, require_club_manager
 from src.schemas.application import (
@@ -172,7 +173,11 @@ def get_active_clubs(
 def link_guest_applications(
     db: Session = Depends(get_db), current_user=Depends(get_current_user)
 ):
-    """인증된 계정 정보와 일치하는 4개월 이내 비회원 합격 신청서를 연결한다."""
+    """인증된 계정 정보와 일치하는 비회원 신청서를 연결한다.
+
+    합격 신청서는 합격 후 4개월 이내에만 연결하며, 연결 시 부원 자격도
+    함께 부여한다. 그 외 제출 신청서는 지원내역에만 연결한다.
+    """
     try:
         return application_service.link_eligible_guest_applications(db, current_user)
     except LookupError as exc:
@@ -303,9 +308,27 @@ def update_application_status(
     db: Session = Depends(get_db),
     current_user=Depends(require_club_manager),
 ):
-    """심사 결과 업데이트 — pending(보류) / passed(합격) / failed(불합격) (회장 전용)."""
+    """회장·관리자가 심사하며, 회장은 불합격 신청서를 합격으로 재심사할 수 있다."""
+    is_president = (
+        db.query(ClubMember.id)
+        .filter(
+            ClubMember.club_id == club_id,
+            ClubMember.user_id == current_user.id,
+            ClubMember.role == "president",
+            ClubMember.status == "active",
+        )
+        .first()
+        is not None
+    )
+
     try:
-        app = application_service.update_application_status(db, club_id, application_id, body.status)
+        app = application_service.update_application_status(
+            db,
+            club_id,
+            application_id,
+            body.status,
+            allow_failed_to_pass=is_president,
+        )
     except LookupError as e:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
     except ValueError as e:

@@ -39,7 +39,6 @@ def _guest_application_payload(seeded_club: dict) -> dict:
         "applicant_name": "비회원지원자",
         "applicant_department": "컴퓨터공학과",
         "applicant_phone": "010-9999-9999",
-        "applicant_email": "guest@example.com",
         "applicant_grade": "2",
         "privacy_consent": True,
         "guest_notice_consent": True,
@@ -60,6 +59,7 @@ def test_password_change_revokes_local_sessions_and_guide_is_recorded(client, db
     assert db.query(AuthSession).filter(AuthSession.user_id == user.id).count() == 1
 
     guide = client.post("/api/v1/auth/me/guide-seen", headers=headers)
+    guide_hidden = client.post("/api/v1/auth/me/guide-hide-today", headers=headers)
     changed = client.post(
         "/api/v1/auth/password/change",
         headers=headers,
@@ -68,6 +68,8 @@ def test_password_change_revokes_local_sessions_and_guide_is_recorded(client, db
 
     assert guide.status_code == 200
     assert guide.json()["guide_seen"] is True
+    assert guide_hidden.status_code == 200
+    assert guide_hidden.json()["guide_hidden_until"] is not None
     assert changed.status_code == 204
     assert db.query(AuthSession).filter(AuthSession.user_id == user.id).count() == 0
     assert user.password_changed_at is not None
@@ -213,6 +215,7 @@ def test_guest_application_acceptance_linking_and_csv(client, db, seeded_club):
     assert comment.status_code == 400
     assert accepted.status_code == 200
     accepted_row = db.get(Application, application_id)
+    assert accepted_row.applicant_email is None
     assert accepted_row.accepted_at is not None
     assert accepted_row.link_expires_at is not None
     assert db.query(ClubMember).filter(
@@ -246,6 +249,83 @@ def test_guest_application_acceptance_linking_and_csv(client, db, seeded_club):
         ClubMember.status == "active",
     ).count() == 1
     assert db.get(Application, application_id).linked_user_id == linked_user.id
+    member_filter = client.get(
+        f"/api/v1/clubs/{seeded_club['club'].id}/applications",
+        headers=president_headers,
+        params={"applicant_type": "member"},
+    )
+    guest_filter = client.get(
+        f"/api/v1/clubs/{seeded_club['club'].id}/applications",
+        headers=president_headers,
+        params={"applicant_type": "guest"},
+    )
+    assert member_filter.status_code == 200
+    assert [item["id"] for item in member_filter.json()["items"]] == [application_id]
+    assert member_filter.json()["items"][0]["applicant_type"] == "member"
+    assert guest_filter.status_code == 200
+    assert guest_filter.json()["items"] == []
+    linked_comment = client.patch(
+        f"/api/v1/clubs/{seeded_club['club'].id}/applications/{application_id}/comment",
+        headers=president_headers,
+        json={"comment": "회원 연결 후 코멘트"},
+    )
+    assert linked_comment.status_code == 200
+    assert linked_comment.json()["admin_comment"] == "회원 연결 후 코멘트"
+    linked_history = client.get(
+        "/api/v1/me/applications/submitted", headers=_headers(linked_user)
+    )
+    assert linked_history.status_code == 200
+    assert [item["id"] for item in linked_history.json()] == [application_id]
+
+
+def test_guest_application_can_link_before_review_and_membership_starts_after_pass(
+    client, db, seeded_club
+):
+    payload = _guest_application_payload(seeded_club)
+    payload.update({
+        "applicant_student_id": "2026888888",
+        "applicant_name": "심사전지원자",
+        "applicant_phone": "010-8888-8888",
+    })
+    guest = client.post("/api/v1/guest/applications", json=payload)
+    assert guest.status_code == 201, guest.text
+    application_id = guest.json()["id"]
+
+    linked_user = User(
+        student_id="2026888888",
+        password_hash=hash_password("password!"),
+        name="심사전지원자",
+        phone="01088888888",
+        department="컴퓨터공학과",
+        email="pending-guest@example.com",
+        email_verified=True,
+    )
+    db.add(linked_user)
+    db.commit()
+    headers = _headers(linked_user)
+
+    linked = client.post("/api/v1/me/applications/link-guest", headers=headers)
+    history = client.get("/api/v1/me/applications/submitted", headers=headers)
+    assert linked.status_code == 200, linked.text
+    assert history.status_code == 200
+    assert [item["id"] for item in history.json()] == [application_id]
+    assert db.query(ClubMember).filter(
+        ClubMember.club_id == seeded_club["club"].id,
+        ClubMember.user_id == linked_user.id,
+        ClubMember.status == "active",
+    ).count() == 0
+
+    passed = client.patch(
+        f"/api/v1/clubs/{seeded_club['club'].id}/applications/{application_id}/status",
+        headers=_headers(seeded_club["president"]),
+        json={"status": "passed"},
+    )
+    assert passed.status_code == 200, passed.text
+    assert db.query(ClubMember).filter(
+        ClubMember.club_id == seeded_club["club"].id,
+        ClubMember.user_id == linked_user.id,
+        ClubMember.status == "active",
+    ).count() == 1
 
 
 def test_platform_roles_service_board_and_anonymous_global_post(client, db):
@@ -282,9 +362,28 @@ def test_platform_roles_service_board_and_anonymous_global_post(client, db):
     assert anonymous.status_code == 201
     assert anonymous.json()["author_id"] is None
     assert anonymous.json()["author_name"] == "익명"
+    assert anonymous.json()["can_manage"] is True
+    anonymous_detail = client.get(
+        f"/api/v1/boards/global/posts/{anonymous.json()['id']}", headers=headers
+    )
+    assert anonymous_detail.status_code == 200
+    assert anonymous_detail.json()["can_manage"] is True
     stored = db.query(Post).filter(Post.title == "익명 글").one()
     assert stored.author_id == author.id
     assert stored.is_anonymous is True
+
+    client.cookies.clear()
+    public_global = client.get("/api/v1/boards/global/posts")
+    public_global_detail = client.get(
+        f"/api/v1/boards/global/posts/{anonymous.json()['id']}"
+    )
+    assert public_global.status_code == 200
+    assert public_global_detail.status_code == 200
+    public_write = client.post(
+        "/api/v1/boards/global/posts",
+        json={"title": "비회원 글", "content": "작성 차단"},
+    )
+    assert public_write.status_code == 401
 
 
 def test_manager_cannot_withdraw_president_or_another_admin(client, db, seeded_club):

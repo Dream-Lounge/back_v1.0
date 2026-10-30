@@ -19,14 +19,17 @@ def _is_manager(db: Session, club_id: str, user_id: str) -> bool:
 
 
 def create_post(db: Session, club_id: str, user: User, data: PostCreate) -> Post:
-    is_pres = _is_manager(db, club_id, user.id)
+    is_manager = _is_manager(db, club_id, user.id)
+    if data.is_notice and not is_manager:
+        raise PermissionError("동아리 공지는 회장 또는 관리자만 작성할 수 있습니다.")
+    is_notice = is_manager and data.is_notice
     post = Post(
         club_id=club_id,
         author_id=user.id,
         title=data.title,
         content=data.content,
-        post_type="notice" if is_pres else "general",
-        is_notice=is_pres,
+        post_type="notice" if is_notice else "general",
+        is_notice=is_notice,
         board_scope="club",
         is_anonymous=data.is_anonymous,
     )

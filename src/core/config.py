@@ -33,6 +33,7 @@ class Settings(BaseSettings):
     SUPABASE_SERVICE_KEY: str = ""
     SUPABASE_STORAGE_BUCKET: str = "club-images"
     SUPABASE_JWKS_CACHE_SECONDS: int = 600
+    SUPABASE_AUTH_TIMEOUT_SECONDS: float = 15.0
 
     FRONTEND_URL: str = "http://localhost:5173"
     ALLOWED_ORIGINS: str = '["http://localhost:5173", "http://localhost:3000"]'
@@ -52,6 +53,9 @@ class Settings(BaseSettings):
     STUDENT_EMAIL_DOMAINS: str = '["cju.ac.kr"]'
     PRIVACY_POLICY_VERSION: str = "2026-10-21"
     UNVERIFIED_ACCOUNT_RETENTION_DAYS: int = 7
+    AUTH_ORPHAN_CLEANUP_ENABLED: bool = True
+    AUTH_ORPHAN_CLEANUP_INTERVAL_SECONDS: int = 86_400
+    AUTH_ORPHAN_CLEANUP_BATCH_SIZE: int = 100
     REFRESH_DEVICE_MAX_PER_10_MINUTES: int = 60
     REFRESH_IP_MAX_PER_10_MINUTES: int = 5000
     IMAGE_UPLOAD_MAX_PER_HOUR: int = 20
