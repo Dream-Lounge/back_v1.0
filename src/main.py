@@ -138,3 +138,4 @@ def readiness_check():
     with engine.connect() as connection:
         connection.execute(text("SELECT 1"))
     return {"status": "ready"}
+#rebuild
