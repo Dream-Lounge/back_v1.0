@@ -1,6 +1,9 @@
-import pytest
-from tests.conftest import register_and_login
+from datetime import timedelta
 
+import pytest
+
+from src.utils.time import kst_today
+from tests.conftest import register_and_login
 
 APPLICANT = {
     "privacy_consent": True,
@@ -38,6 +41,29 @@ class TestCreateApplication:
         })
         assert response.status_code == 400
         assert response.json()["detail"] == "모집이 마감된 동아리에는 지원할 수 없습니다."
+
+    def test_expired_recruitment_rejects_application_and_persists_closed_status(
+        self, client, db, app_setup, seeded_club
+    ):
+        club = seeded_club["club"]
+        club.is_recruiting = True
+        club.recruit_end = kst_today() - timedelta(days=1)
+        db.commit()
+
+        response = client.post(
+            "/api/v1/applications",
+            headers=app_setup["headers"],
+            json={
+                "form_id": app_setup["form_id"],
+                "is_draft": True,
+                "answers": [],
+            },
+        )
+
+        assert response.status_code == 400
+        assert response.json()["detail"] == "모집이 마감된 동아리에는 지원할 수 없습니다."
+        db.expire_all()
+        assert db.get(type(club), club.id).is_recruiting is False
 
     @pytest.mark.parametrize("is_draft", [True, False])
     def test_club_president_cannot_create_application(

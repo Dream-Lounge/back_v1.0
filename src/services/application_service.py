@@ -17,6 +17,7 @@ from src.schemas.application import (
     GuestApplicationCreate,
 )
 from src.services.audit_service import queue_audit_log
+from src.services.recruitment_service import close_expired_recruitments
 from src.utils.time import kst_today, utc_now_naive
 
 CLUB_PRESIDENT_APPLICATION_ERROR = "동아리 관리자는 본인 동아리에 신청할 수 없습니다."
@@ -54,6 +55,7 @@ def _ensure_not_club_president(
 
 def _ensure_club_is_recruiting(db: Session, club_id: str) -> None:
     """관리자 토글과 한국 날짜 범위를 서버에서도 최종 검증한다."""
+    close_expired_recruitments(db, club_id=club_id)
     club = db.get(Club, club_id)
     today = kst_today()
     if (

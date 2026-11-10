@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -43,9 +43,17 @@ class RecommendationQAResponse(BaseModel):
     intent: str = "other"
     confidence: float = 0.0
     suggested_questions: list[str] = Field(default_factory=list)
+    answer_source: Literal["evidence", "llm"] = "evidence"
+
+
+class RecommendationLlmInfo(BaseModel):
+    enabled: bool = False
+    available: bool = False
+    model: str = ""
 
 
 class RecommendationHealthResponse(BaseModel):
     status: str
     clubs: int
     model_info: dict[str, str]
+    llm: RecommendationLlmInfo = Field(default_factory=RecommendationLlmInfo)

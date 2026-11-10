@@ -13,6 +13,7 @@ from src.schemas.recommendation import (
     RecommendationRequest,
     RecommendationResponse,
 )
+from src.services.qa_answer_service import QaAnswerService
 from src.services.recommendation_service import RecommendationService
 
 router = APIRouter(prefix="/recommendations", tags=["recommendations"])
@@ -51,7 +52,7 @@ def personalized_recommend(
 @router.post("/qa", response_model=RecommendationQAResponse)
 def answer_question(payload: RecommendationQARequest, db: DatabaseSession):
     try:
-        return RecommendationService(db).qa(
+        return QaAnswerService(db).answer(
             payload.question,
             payload.club_id,
             payload.previous_question,
@@ -67,4 +68,5 @@ def recommendation_health(db: DatabaseSession):
         "status": "ready" if service.records else "empty",
         "clubs": len(service.records),
         "model_info": service.model_info,
+        "llm": QaAnswerService(db).public_status(),
     }

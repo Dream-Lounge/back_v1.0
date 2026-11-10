@@ -1,8 +1,11 @@
 """관리자(동아리 회장) 기능 통합 테스트."""
+
+from datetime import timedelta
 from unittest.mock import patch
 
 import pytest
 
+from src.utils.time import kst_today
 from tests.conftest import register_and_login
 
 
@@ -151,6 +154,44 @@ class TestClubUpdate:
         })
         assert resp.status_code == 200
         assert resp.json()["description"] == "수정된 설명"
+
+    def test_past_recruitment_end_is_saved_as_closed(self, client, db, setup):
+        yesterday = kst_today() - timedelta(days=1)
+
+        resp = client.patch(
+            f"/api/v1/clubs/{setup['club_id']}",
+            headers=setup["president_headers"],
+            json={
+                "is_recruiting": True,
+                "recruit_start": str(yesterday - timedelta(days=7)),
+                "recruit_end": str(yesterday),
+            },
+        )
+
+        assert resp.status_code == 200
+        assert resp.json()["is_recruiting"] is False
+        from src.models.club import Club
+
+        db.expire_all()
+        assert db.get(Club, setup["club_id"]).is_recruiting is False
+
+    def test_recruitment_end_date_remains_open_until_end_of_kst_day(
+        self, client, setup
+    ):
+        today = kst_today()
+
+        resp = client.patch(
+            f"/api/v1/clubs/{setup['club_id']}",
+            headers=setup["president_headers"],
+            json={
+                "is_recruiting": True,
+                "recruit_start": str(today - timedelta(days=7)),
+                "recruit_end": str(today),
+            },
+        )
+
+        assert resp.status_code == 200
+        assert resp.json()["is_recruiting"] is True
 
     def test_update_accepts_tagline_up_to_2000_characters(self, client, setup):
         tagline = "가" * 2000

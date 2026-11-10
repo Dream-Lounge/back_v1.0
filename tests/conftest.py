@@ -10,6 +10,7 @@ from sqlalchemy.orm import sessionmaker
 os.environ["SUPABASE_SERVICE_KEY"] = ""
 os.environ["STUDENT_EMAIL_DOMAINS"] = '["example.com", "cju.ac.kr"]'
 os.environ["PRIVACY_POLICY_VERSION"] = "test-v1"
+os.environ["LLM_ENABLED"] = "false"
 from src.main import app
 from src.db.base import Base
 from src.db.session import get_db

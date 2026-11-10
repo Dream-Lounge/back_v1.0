@@ -39,6 +39,7 @@ def test_recommendation_qa_returns_grounded_evidence(client, db, seeded_club):
     assert response.json()["supported"] is True
     assert "초보" in response.json()["answer"]
     assert response.json()["evidence"]
+    assert response.json()["answer_source"] == "evidence"
 
 
 def test_recommendation_qa_answers_generic_activity_question(client, db, seeded_club):
@@ -169,6 +170,11 @@ def test_recommendation_health_reports_empty_catalog(client):
 
     assert response.status_code == 200
     assert response.json()["status"] == "empty"
+    assert response.json()["llm"] == {
+        "enabled": False,
+        "available": False,
+        "model": "gemma3:4b",
+    }
 
 
 def test_recommendation_request_limits(client):

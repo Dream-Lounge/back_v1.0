@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from src.core.config import settings
 from src.models.club import Club
+from src.services.recruitment_service import close_expired_recruitments
 from src.utils.recommendation_embeddings import (
     Embedder,
     build_embedder,
@@ -150,6 +151,7 @@ class RecommendationService:
 
     def __init__(self, db: Session, embedder: Embedder | None = None) -> None:
         self.db = db
+        close_expired_recruitments(db)
         self.embedder = embedder or build_embedder(
             settings.RECOMMENDATION_MODEL,
             settings.RECOMMENDATION_MODEL_CACHE_DIR or None,

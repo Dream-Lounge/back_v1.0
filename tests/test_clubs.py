@@ -1,4 +1,7 @@
+from datetime import timedelta
 from unittest.mock import patch
+
+from src.utils.time import kst_today
 
 
 class TestListClubs:
@@ -8,6 +11,35 @@ class TestListClubs:
         assert resp.status_code == 200
         assert resp.headers["cache-control"] == "public, max-age=5, s-maxage=10, must-revalidate"
         assert seeded_club["club"].id in {club["id"] for club in resp.json()}
+
+    def test_list_closes_expired_recruitment_and_persists_status(
+        self, client, db, seeded_club
+    ):
+        club = seeded_club["club"]
+        club.is_recruiting = True
+        club.recruit_end = kst_today() - timedelta(days=1)
+        db.commit()
+
+        resp = client.get("/api/v1/clubs")
+
+        assert resp.status_code == 200
+        returned = next(item for item in resp.json() if item["id"] == club.id)
+        assert returned["is_recruiting"] is False
+        db.expire_all()
+        assert db.get(type(club), club.id).is_recruiting is False
+
+    def test_recruiting_filter_excludes_expired_club(
+        self, client, db, seeded_club
+    ):
+        club = seeded_club["club"]
+        club.is_recruiting = True
+        club.recruit_end = kst_today() - timedelta(days=1)
+        db.commit()
+
+        resp = client.get("/api/v1/clubs", params={"is_recruiting": "true"})
+
+        assert resp.status_code == 200
+        assert club.id not in {item["id"] for item in resp.json()}
 
     def test_searches_by_partial_club_name(self, client, seeded_club):
         resp = client.get("/api/v1/clubs", params={"search": "스트동"})

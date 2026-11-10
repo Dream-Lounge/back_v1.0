@@ -69,6 +69,21 @@ class Settings(BaseSettings):
     RECOMMENDATION_MODEL_CACHE_DIR: str = ""
     RECOMMENDATION_QA_THRESHOLD: float = 0.18
 
+    # 동아리 상세 Q&A의 선택적 LLM 답변 생성 계층.
+    # 기본값은 비활성화이며, 비활성·연결 실패·타임아웃 시 기존 evidence
+    # 답변을 그대로 유지한다. /v1로 끝나는 URL은 OpenAI 호환 API를 사용한다.
+    LLM_ENABLED: bool = False
+    LLM_BASE_URL: str = "http://localhost:11434"
+    LLM_MODEL: str = "gemma3:4b"
+    LLM_API_KEY: str = ""
+    LLM_TIMEOUT_SECONDS: float = 30.0
+    LLM_TEMPERATURE: float = 0.2
+    LLM_MAX_TOKENS: int = 256
+    LLM_TOP_K_EVIDENCE: int = 1
+    LLM_HEALTH_TTL_SECONDS: int = 30
+    LLM_RETRY_COOLDOWN_SECONDS: int = 60
+    LLM_PROBE_TIMEOUT_SECONDS: float = 2.0
+
     @field_validator("DATABASE_URL", "MIGRATION_DATABASE_URL", mode="before")
     @classmethod
     def use_psycopg3_driver(cls, value):

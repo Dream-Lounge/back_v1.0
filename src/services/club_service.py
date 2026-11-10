@@ -16,6 +16,11 @@ from src.schemas.club import (
     QuestionUpdate,
 )
 from src.services.audit_service import queue_audit_log
+from src.services.recruitment_service import (
+    close_expired_recruitments,
+    normalized_recruitment_status,
+    validate_recruitment_period,
+)
 from src.utils.storage import cleanup_pending_club_images, delete_managed_club_images
 
 
@@ -78,6 +83,7 @@ def get_clubs(
     **filters,
 ) -> list[Club]:
     """모집 중 우선, 같은 상태에서는 이름순으로 동아리를 조회한다."""
+    close_expired_recruitments(db)
     query = _clubs_query(db, search, **filters)
     return query.order_by(Club.is_recruiting.desc(), Club.name.asc(), Club.id.asc()).all()
 
@@ -89,6 +95,7 @@ def get_clubs_page(
     search: str | None = None,
     **filters,
 ) -> dict:
+    close_expired_recruitments(db)
     query = _clubs_query(db, search, **filters)
     total = query.count()
     items = (
@@ -108,6 +115,7 @@ def get_clubs_page(
 
 def get_club(db: Session, club_id: str) -> Club | None:
     """club_id로 동아리 상세 정보 조회 (tags 포함)."""
+    close_expired_recruitments(db, club_id=club_id)
     return (
         db.query(Club)
         .options(selectinload(Club.tags), selectinload(Club.activity_image_records))
@@ -222,6 +230,12 @@ def create_club(db: Session, user: User, data: ClubCreate) -> Club:
         else [{"image_url": url, "caption": None} for url in data.activity_images]
     )
 
+    validate_recruitment_period(data.recruit_start, data.recruit_end)
+    is_recruiting = normalized_recruitment_status(
+        data.is_recruiting,
+        data.recruit_end,
+    )
+
     club = Club(
         president_id=user.id,
         name=data.name,
@@ -241,7 +255,7 @@ def create_club(db: Session, user: User, data: ClubCreate) -> Club:
         activity_period=data.activity_period,
         recruit_start=data.recruit_start,
         recruit_end=data.recruit_end,
-        is_recruiting=data.is_recruiting,
+        is_recruiting=is_recruiting,
     )
     db.add(club)
     db.flush()
@@ -287,6 +301,15 @@ def update_club(db: Session, club: Club, data: ClubUpdate) -> Club:
     update_values = data.model_dump(
         exclude_unset=True,
         exclude={"tags", "activity_image_details"},
+    )
+
+    final_recruit_start = update_values.get("recruit_start", club.recruit_start)
+    final_recruit_end = update_values.get("recruit_end", club.recruit_end)
+    validate_recruitment_period(final_recruit_start, final_recruit_end)
+    final_is_recruiting = update_values.get("is_recruiting", club.is_recruiting)
+    update_values["is_recruiting"] = normalized_recruitment_status(
+        final_is_recruiting,
+        final_recruit_end,
     )
 
     if data.activity_image_details is not None:
